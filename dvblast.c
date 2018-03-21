@@ -67,6 +67,7 @@ int i_fenum = 0;
 int i_canum = 0;
 char *psz_delsys = NULL;
 int i_frequency = 0;
+char *psz_lnb_type = "universal";
 int dvb_plp_id = 0;
 int i_inversion = -1;
 int i_srate = 27500000;
@@ -92,7 +93,7 @@ int b_select_pmts = 0;
 int b_random_tsid = 0;
 char *psz_udp_src = NULL;
 int i_asi_adapter = 0;
-const char *psz_native_charset = "UTF-8";
+const char *psz_native_charset = "UTF-8//IGNORE";
 print_type_t i_print_type = PRINT_TEXT;
 bool b_print_enabled = false;
 FILE *print_fh;
@@ -114,7 +115,7 @@ static mtime_t i_latency_global = DEFAULT_OUTPUT_LATENCY;
 static mtime_t i_retention_global = DEFAULT_MAX_RETENTION;
 static int i_ttl_global = 64;
 
-static const char *psz_dvb_charset = "UTF-8";
+static const char *psz_dvb_charset = "UTF-8//IGNORE";
 static iconv_t conf_iconv = (iconv_t)-1;
 static uint16_t i_network_id = 0xffff;
 static dvb_string_t network_name;
@@ -644,6 +645,8 @@ void usage()
     msg_Raw( NULL, "  -5 --delsys           delivery system" );
     msg_Raw( NULL, "    DVBS|DVBS2|DVBC_ANNEX_A|DVBT|DVBT2|ATSC|ISDBT|DVBC_ANNEX_B(ATSC-C/QAMB) (default guessed)");
     msg_Raw( NULL, "  -f --frequency        frontend frequency" );
+    msg_Raw( NULL, "  -8 --lnb-type <type>  Set LNB type')" );
+    msg_Raw( NULL, "        universal old-sky (default: universal)");
     msg_Raw( NULL, "  -9 --dvb-plp-id <number> Switch PLP of the DVB-T2 transmission (for Russia special)" );
     msg_Raw( NULL, "  -F --fec-inner        Forward Error Correction (FEC Inner)");
     msg_Raw( NULL, "    DVB-S2 0|12|23|34|35|56|78|89|910|999 (default auto: 999)");
@@ -697,8 +700,8 @@ void usage()
     msg_Raw( NULL, "Misc:" );
     msg_Raw( NULL, "  -h --help             display this full help" );
     msg_Raw( NULL, "  -i --priority <RT priority>" );
-    msg_Raw( NULL, "  -j --system-charset   character set used for printing messages (default UTF-8)" );
-    msg_Raw( NULL, "  -J --dvb-charset      character set used in output DVB tables (default UTF-8)" );
+    msg_Raw( NULL, "  -j --system-charset   character set used for printing messages (default UTF-8//IGNORE)" );
+    msg_Raw( NULL, "  -J --dvb-charset      character set used in output DVB tables (default UTF-8//IGNORE)" );
     msg_Raw( NULL, "  -l --logger           use syslog for logging messages instead of stderr" );
     msg_Raw( NULL, "  -g --logger-ident     program name that will be used in syslog messages" );
     msg_Raw( NULL, "  -x --print            print interesting events on stdout in a given format" );
@@ -730,7 +733,7 @@ int main( int i_argc, char **pp_argv )
         usage();
 
     /*
-     * The only short options left are: 48
+     * The only short options left are: 4
      * Use them wisely.
      */
     static const struct option long_options[] =
@@ -745,6 +748,7 @@ int main( int i_argc, char **pp_argv )
         { "delsys",          required_argument, NULL, '5' },
         { "dvb-plp-id",      required_argument, NULL, '9' },
         { "frequency",       required_argument, NULL, 'f' },
+        { "lnb-type",        required_argument, NULL, '8' },
         { "fec-inner",       required_argument, NULL, 'F' },
         { "rolloff",         required_argument, NULL, 'R' },
         { "symbol-rate",     required_argument, NULL, 's' },
@@ -888,6 +892,10 @@ int main( int i_argc, char **pp_argv )
             msg_Err( NULL, "DVBlast is compiled without DVB support.");
             exit(1);
 #endif
+            break;
+
+        case '8':
+            psz_lnb_type = optarg;
             break;
 
         case 'F':

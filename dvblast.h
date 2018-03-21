@@ -221,6 +221,7 @@ extern int i_canum;
 extern char *psz_delsys;
 extern int i_dvr_buffer_size;
 extern int i_frequency;
+extern char *psz_lnb_type;
 extern int i_srate;
 extern int i_satnum;
 extern int i_uncommitted;
@@ -342,6 +343,8 @@ uint8_t *demux_get_current_packed_CAT( unsigned int *pi_pack_size );
 uint8_t *demux_get_current_packed_NIT( unsigned int *pi_pack_size );
 uint8_t *demux_get_current_packed_SDT( unsigned int *pi_pack_size );
 uint8_t *demux_get_packed_PMT( uint16_t service_id, unsigned int *pi_pack_size );
+uint8_t *demux_get_packed_EIT_pf( uint16_t service_id, unsigned int *pi_pack_size );
+uint8_t *demux_get_packed_EIT_schedule( uint16_t service_id, unsigned int *pi_pack_size );
 void demux_get_PID_info( uint16_t i_pid, uint8_t *p_data );
 void demux_get_PIDS_info( uint8_t *p_data );
 
