@@ -242,7 +242,7 @@ static uint8_t *config_striconv( const char *psz_string,
     size_t i_available = i_output;
     char *p_output = malloc( i_output );
     char *p = p_output;
-    if ( iconv( conf_iconv, &psz_tmp, &i_input, &p, &i_available ) == -1 )
+    if ( iconv( conf_iconv, &psz_tmp, &i_input, &p, &i_available ) == (size_t)-1 )
     {
         free( p_output );
 
