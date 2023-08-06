@@ -2296,7 +2296,7 @@ char *demux_Iconv(void *_unused, const char *psz_encoding,
     /* converted strings can be up to six times larger */
     i_out_length = i_length * 6;
     p = psz_string = malloc(i_out_length);
-    if (iconv(iconv_handle, &p_string, &i_length, &p, &i_out_length) == -1) {
+    if (iconv(iconv_handle, &p_string, &i_length, &p, &i_out_length) == (size_t)-1) {
         msg_Warn(NULL, "couldn't convert from %s to %s (%m)", psz_encoding,
                 psz_native_charset);
         free(psz_string);
