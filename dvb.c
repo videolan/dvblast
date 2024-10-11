@@ -290,16 +290,37 @@ static void PrintCb( struct ev_loop *loop, struct ev_timer *w, int revents )
     ioctl(i_frontend, FE_READ_SNR, &i_snr);
     ioctl(i_frontend, FE_READ_UNCORRECTED_BLOCKS, &i_uncorrected);
 
+    int64_t i_strength_dbm = i_strength;
+    int64_t i_snr_db = i_snr;
+
+#ifdef DTV_STAT_SIGNAL_STRENGTH
+    struct dtv_property prop[] = {
+        { .cmd = DTV_STAT_SIGNAL_STRENGTH },
+        { .cmd = DTV_STAT_CNR },
+    };
+
+    struct dtv_properties props = { .num = 2, .props = prop };
+    if (ioctl(i_frontend, FE_GET_PROPERTY, &props) != -1)
+    {
+        if (prop[0].u.st.len > 0 &&
+            prop[0].u.st.stat[0].scale == FE_SCALE_DECIBEL)
+            i_strength_dbm = prop[0].u.st.stat[0].svalue;
+        if (prop[1].u.st.len > 0 &&
+            prop[1].u.st.stat[0].scale == FE_SCALE_DECIBEL)
+            i_snr_db = prop[1].u.st.stat[0].svalue;
+    }
+#endif
+
     switch (i_print_type)
     {
         case PRINT_XML:
             fprintf(print_fh,
-                    "<STATUS type=\"frontend\" ber=\"%"PRIu32"\" strength=\"%"PRIu16"\" snr=\"%"PRIu16"\" uncorrected=\"%"PRIu32"\" />\n",
-                    i_ber, i_strength, i_snr, i_uncorrected);
+                    "<STATUS type=\"frontend\" ber=\"%"PRIu32"\" strength=\"%"PRId64"\" snr=\"%"PRId64"\" uncorrected=\"%"PRIu32"\" />\n",
+                    i_ber, i_strength_dbm, i_snr_db, i_uncorrected);
             break;
         case PRINT_TEXT:
-            fprintf(print_fh, "frontend ber: %"PRIu32" strength: %"PRIu16" snr: %"PRIu16" uncorrected: %"PRIu32"\n",
-                    i_ber, i_strength, i_snr, i_uncorrected);
+            fprintf(print_fh, "frontend ber: %"PRIu32" strength: %"PRId64" snr: %"PRId64" uncorrected: %"PRIu32"\n",
+                    i_ber, i_strength_dbm, i_snr_db, i_uncorrected);
             break;
         default:
             break;
