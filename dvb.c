@@ -72,7 +72,7 @@
 
 int i_dvr_buffer_size = DVR_BUFFER_SIZE;
 
-static int i_frontend, i_dvr;
+static int i_frontend, i_dvr, i_sec;
 static struct ev_io frontend_watcher, dvr_watcher;
 static struct ev_timer lock_watcher, mute_watcher, print_watcher;
 static fe_status_t i_last_status;
@@ -86,6 +86,59 @@ static void DVRMuteCb(struct ev_loop *loop, struct ev_timer *w, int revents);
 static void FrontendRead(struct ev_loop *loop, struct ev_io *w, int revents);
 static void FrontendLockCb(struct ev_loop *loop, struct ev_timer *w, int revents);
 static void FrontendSet( bool b_reset );
+
+/*****************************************************************************
+ * dvb_OpenDvr
+ *****************************************************************************/
+void dvb_OpenDvr( void )
+{
+    char psz_tmp[128];
+
+    sprintf( psz_tmp, "/dev/dvb/adapter%d/dvr%d", i_adapter, i_fenum );
+    if( (i_dvr = open(psz_tmp, O_RDONLY | O_NONBLOCK)) < 0 )
+    {
+        msg_Info(NULL, "opening device %s failed (%s), fallback on sec device",
+                 psz_tmp, strerror(errno));
+
+        /* try to read from sec device */
+        sprintf(psz_tmp, "/dev/dvb/adapter%d/sec%d", i_adapter, i_fenum);
+        if ( (i_dvr = open(psz_tmp, O_RDONLY | O_NONBLOCK)) < 0 )
+        {
+            msg_Err(NULL, "opening device %s failed (%s)", psz_tmp,
+                    strerror(errno));
+            exit(1);
+        }
+    }
+
+    if ( ioctl( i_dvr, DMX_SET_BUFFER_SIZE, i_dvr_buffer_size ) < 0 )
+    {
+        msg_Warn( NULL, "couldn't set %s buffer size (%s)", psz_tmp,
+                 strerror(errno) );
+    }
+
+    ev_io_init(&dvr_watcher, DVRRead, i_dvr, EV_READ);
+    ev_io_start(event_loop, &dvr_watcher);
+}
+
+/*****************************************************************************
+ * dvb_OpenSec
+ *****************************************************************************/
+void dvb_OpenSec( void )
+{
+    char psz_tmp[128];
+
+    msg_Dbg( NULL, "compiled with DVB API version %d.%d", DVB_API_VERSION, DVB_API_VERSION_MINOR );
+
+    i_frontend = -1;
+
+    sprintf( psz_tmp, "/dev/dvb/adapter%d/sec%d", i_adapter, i_secnum );
+    if( (i_sec = open(psz_tmp, O_WRONLY)) < 0 )
+    {
+        msg_Err(NULL, "opening device %s failed (%s)", psz_tmp,
+                strerror(errno));
+        exit(1);
+    }
+}
 
 /*****************************************************************************
  * dvb_Open
@@ -113,23 +166,7 @@ void dvb_Open( void )
         i_frontend = -1;
     }
 
-    sprintf( psz_tmp, "/dev/dvb/adapter%d/dvr%d", i_adapter, i_fenum );
-
-    if( (i_dvr = open(psz_tmp, O_RDONLY | O_NONBLOCK)) < 0 )
-    {
-        msg_Err( NULL, "opening device %s failed (%s)", psz_tmp,
-                 strerror(errno) );
-        exit(1);
-    }
-
-    if ( ioctl( i_dvr, DMX_SET_BUFFER_SIZE, i_dvr_buffer_size ) < 0 )
-    {
-        msg_Warn( NULL, "couldn't set %s buffer size (%s)", psz_tmp,
-                 strerror(errno) );
-    }
-
-    ev_io_init(&dvr_watcher, DVRRead, i_dvr, EV_READ);
-    ev_io_start(event_loop, &dvr_watcher);
+    dvb_OpenDvr();
 
     if ( i_frontend != -1 )
     {
@@ -271,6 +308,33 @@ void dvb_UnsetFilter( int i_fd, uint16_t i_pid )
     close( i_fd );
 }
 
+/*****************************************************************************
+ * dvb_WriteSec: write data to sec device
+ *****************************************************************************/
+void dvb_WriteSec( block_t *p_ts )
+{
+    int i_iov = 0;
+
+    for (block_t *p_b = p_ts; p_b; p_b = p_b->p_next)
+        i_iov++;
+
+    struct iovec p_iov[i_iov];
+    struct iovec *p_current = &p_iov[0];
+    for (block_t *p_b = p_ts; p_b; p_b = p_b->p_next)
+    {
+        p_current->iov_base = p_b->p_ts;
+        p_current->iov_len = TS_SIZE;
+        p_current++;
+    }
+
+    int i_len;
+    if ( (i_len = writev( i_sec, p_iov, i_iov )) < 0 )
+    {
+        msg_Err( NULL, "couldn't write to DVB sec (%s)", strerror(errno) );
+    }
+
+    block_DeleteChain( p_ts );
+}
 
 /*
  * Frontend

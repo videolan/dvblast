@@ -65,6 +65,7 @@ static int i_priority = -1;
 int i_adapter = 0;
 int i_fenum = 0;
 int i_canum = 0;
+int i_secnum = -1;
 char *psz_delsys = NULL;
 int i_frequency = 0;
 char *psz_lnb_type = "universal";
@@ -661,6 +662,7 @@ void usage()
     msg_Raw( NULL, "    DVB-T  qam_16|qam_32|qam_64|qam_128|qam_256 (default qam_auto)" );
     msg_Raw( NULL, "    DVB-S2 qpsk|psk_8|apsk_16|apsk_32 (default legacy DVB-S)" );
     msg_Raw( NULL, "  -n --frontend-number <frontend number>" );
+    msg_Raw( NULL, "     --sec-number <sec number>" );
     msg_Raw( NULL, "  -p --force-pulse      force 22kHz pulses for high-band selection (DVB-S)" );
     msg_Raw( NULL, "  -P --pilot            DVB-S2 Pilot (-1 auto, 0 off, 1 on)" );
     msg_Raw( NULL, "  -R --rolloff          DVB-S2 Rolloff value" );
@@ -753,6 +755,7 @@ int main( int i_argc, char **pp_argv )
         { "priority",        required_argument, NULL, 'i' },
         { "adapter",         required_argument, NULL, 'a' },
         { "frontend-number", required_argument, NULL, 'n' },
+        { "sec-number",      required_argument, NULL, 0x100004 },
         { "delsys",          required_argument, NULL, '5' },
         { "dvb-plp-id",      required_argument, NULL, '9' },
         { "frequency",       required_argument, NULL, 'f' },
@@ -878,6 +881,10 @@ int main( int i_argc, char **pp_argv )
 
         case 'n':
             i_fenum = strtol( optarg, NULL, 0 );
+            break;
+
+        case 0x100004:
+            i_secnum = strtol( optarg, NULL, 0 );
             break;
 
         case 'y':

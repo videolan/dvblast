@@ -44,6 +44,7 @@
 #include <bitstream/ietf/rtp.h>
 
 #include "dvblast.h"
+#include "en50221.h"
 
 /*****************************************************************************
  * Local declarations
@@ -279,6 +280,13 @@ void udp_Open( void )
     ev_timer_init(&mute_watcher, udp_MuteCb,
                   i_udp_lock_timeout / 1000000., i_udp_lock_timeout / 1000000.);
     memset(&last_addr, 0, sizeof(last_addr));
+
+    if ( i_secnum >= 0 )
+    {
+        dvb_OpenDvr();
+        dvb_OpenSec();
+        en50221_Init();
+    }
 }
 
 /*****************************************************************************
@@ -431,7 +439,10 @@ err:
     block_DeleteChain( *pp_current );
     *pp_current = NULL;
 
-    demux_Run( p_ts );
+    if ( i_secnum < 0 )
+        demux_Run(p_ts);
+    else
+        dvb_WriteSec(p_ts);
 }
 
 static void udp_MuteCb(struct ev_loop *loop, struct ev_timer *w, int revents)
