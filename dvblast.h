@@ -218,6 +218,7 @@ extern char *psz_srv_socket;
 extern int i_adapter;
 extern int i_fenum;
 extern int i_canum;
+extern int i_secnum;
 extern char *psz_delsys;
 extern int i_dvr_buffer_size;
 extern int i_frequency;
@@ -319,6 +320,9 @@ void dvb_Open( void );
 void dvb_Reset( void );
 int dvb_SetFilter( uint16_t i_pid );
 void dvb_UnsetFilter( int i_fd, uint16_t i_pid );
+void dvb_OpenDvr( void );
+void dvb_OpenSec( void );
+void dvb_WriteSec( block_t *p_ts );
 uint8_t dvb_FrontendStatus( uint8_t *p_answer, ssize_t *pi_size );
 
 void udp_Open( void );

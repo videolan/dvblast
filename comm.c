@@ -121,6 +121,16 @@ static void comm_Read(struct ev_loop *loop, struct ev_io *w, int revents)
         switch ( i_command )
         {
             case CMD_FRONTEND_STATUS:
+                i_answer = RET_NODATA;
+                i_answer_size = 0;
+                goto return_answer;
+        }
+    }
+
+    if ( i_frequency == 0 && i_secnum < 0 )
+    {
+        switch ( i_command )
+        {
             case CMD_MMI_STATUS:
             case CMD_MMI_SLOT_STATUS:
             case CMD_MMI_OPEN:
