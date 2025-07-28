@@ -2427,6 +2427,7 @@ static void HandlePAT( mtime_t i_dts )
                     for ( r = 0; r < MAX_EIT_TABLES; r++ ) {
                         psi_table_init( p_sid->eit_table[r].data );
                     }
+                    p_sid->i_packets_passed = 0;
                     i_nb_sids++;
                     pp_sids = realloc( pp_sids, sizeof(sid_t *) * i_nb_sids );
                     pp_sids[i_nb_sids - 1] = p_sid;
