@@ -91,7 +91,7 @@ struct eit_sections {
 
 /* EIT is carried in several separate tables, we need to track each table
    separately, otherwise one table overwrites sections of another table */
-#define MAX_EIT_TABLES ( EIT_TABLE_ID_SCHED_ACTUAL_LAST - EIT_TABLE_ID_PF_ACTUAL )
+#define MAX_EIT_TABLES ( EIT_TABLE_ID_SCHED_ACTUAL_LAST - EIT_TABLE_ID_PF_ACTUAL + 1)
 
 typedef struct sid_t
 {
