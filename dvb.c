@@ -827,6 +827,23 @@ static fe_rolloff_t GetRollOff(void)
     }
 }
 
+static int GetSSI(void)
+{
+    if ( streq(psz_mis_pls_mode, "GOLD") )
+        return i_mis_pls_code;
+
+    /* ROOT mode */
+    uint32_t x, g;
+
+    for ( g = 0, x = 1; g < 0x3ffff; g++ )
+    {
+        if ( i_mis_pls_code == x )
+            return g;
+        x = (((x ^ (x >> 7)) & 1) << 17) | (x >> 1);
+    }
+    return 0xffffffff;
+}
+
 static fe_guard_interval_t GetGuard(void)
 {
     switch ( i_guard )
@@ -1006,19 +1023,21 @@ static struct dtv_properties dvbs_cmdseq = {
 #define IDX_DVBS2_PILOT     6
 #define IDX_DVBS2_ROLLOFF   7
 #define IDX_DVBS2_STREAM_ID 8
+#define IDX_DVBS2_SSI       9
 
 /* Commands 0..5 are the same as dvbs_cmdargs */
 /* Commands 6..8 are special for DVB-S2 */
 static struct dtv_property dvbs2_cmdargs[] = {
-    { .cmd = DTV_DELIVERY_SYSTEM, .u.data = SYS_DVBS2 },
-    { .cmd = DTV_FREQUENCY,       .u.data = 0 },
-    { .cmd = DTV_MODULATION,      .u.data = PSK_8 },
-    { .cmd = DTV_INVERSION,       .u.data = INVERSION_AUTO },
-    { .cmd = DTV_SYMBOL_RATE,     .u.data = 27500000 },
-    { .cmd = DTV_INNER_FEC,       .u.data = FEC_AUTO },
-    { .cmd = DTV_PILOT,           .u.data = PILOT_AUTO },   /* idx: 6 */
-    { .cmd = DTV_ROLLOFF,         .u.data = ROLLOFF_AUTO }, /* idx: 7 */
-    { .cmd = DTV_STREAM_ID,       .u.data = 0 },            /* idx: 8 */
+    { .cmd = DTV_DELIVERY_SYSTEM,           .u.data = SYS_DVBS2 },
+    { .cmd = DTV_FREQUENCY,                 .u.data = 0 },
+    { .cmd = DTV_MODULATION,                .u.data = PSK_8 },
+    { .cmd = DTV_INVERSION,                 .u.data = INVERSION_AUTO },
+    { .cmd = DTV_SYMBOL_RATE,               .u.data = 27500000 },
+    { .cmd = DTV_INNER_FEC,                 .u.data = FEC_AUTO },
+    { .cmd = DTV_PILOT,                     .u.data = PILOT_AUTO },   /* idx: 6 */
+    { .cmd = DTV_ROLLOFF,                   .u.data = ROLLOFF_AUTO }, /* idx: 7 */
+    { .cmd = DTV_STREAM_ID,                 .u.data = 0 },            /* idx: 8 */
+    { .cmd = DTV_SCRAMBLING_SEQUENCE_INDEX, .u.data = 0 },            /* idx: 9 */
     { .cmd = DTV_TUNE },
 };
 static struct dtv_properties dvbs2_cmdseq = {
@@ -1394,7 +1413,11 @@ static void FrontendSet( bool b_init )
             p->props[MODULATION].u.data = GetModulation();
             p->props[IDX_DVBS2_PILOT].u.data = GetPilot();
             p->props[IDX_DVBS2_ROLLOFF].u.data = GetRollOff();
-            p->props[IDX_DVBS2_STREAM_ID].u.data = i_mis;
+            if ( i_mis_pls_code )
+            {
+                p->props[IDX_DVBS2_STREAM_ID].u.data = i_mis_is_id;
+                p->props[IDX_DVBS2_SSI].u.data = GetSSI();
+            }
         }
         else
             p = &dvbs_cmdseq;
@@ -1404,10 +1427,10 @@ static void FrontendSet( bool b_init )
         p->props[FEC_INNER].u.data = GetFECInner(info.caps);
         p->props[FREQUENCY].u.data = FrontendDoDiseqc();
 
-        msg_Dbg( NULL, "tuning DVB-S frontend to f=%d srate=%d inversion=%d fec=%d rolloff=%d modulation=%s pilot=%d mis=%d /pls-mode: %s (%d) pls-code: %d is-id: %d /",
+        msg_Dbg( NULL, "tuning DVB-S frontend to f=%d srate=%d inversion=%d fec=%d rolloff=%d modulation=%s pilot=%d pls-mode: %s pls-code: %d is-id: %u",
                  i_frequency, i_srate, i_inversion, i_fec, i_rolloff,
                  psz_modulation == NULL ? "legacy" : psz_modulation, i_pilot,
-                 i_mis, psz_mis_pls_mode, i_mis_pls_mode, i_mis_pls_code, i_mis_is_id );
+                 psz_mis_pls_mode, i_mis_pls_code, i_mis_is_id );
         break;
 
     case SYS_ATSC:

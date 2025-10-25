@@ -472,7 +472,7 @@ static void output_Flush( output_t *p_output )
         if ( !p_packet->pp_blocks[i_block]->i_refcount )
             block_Delete( p_packet->pp_blocks[i_block] );
         else if ( b_do_remap || p_output->config.b_do_remap ) {
-            /* still referenced so re-instate the orignial pid if remapped */
+            /* still referenced so re-instate the original pid if remapped */
             block_t * p_block = p_packet->pp_blocks[i_block];
             if (p_block->tmp_pid != UNUSED_PID)
                 ts_set_pid( p_block->p_ts, p_block->tmp_pid );
@@ -604,10 +604,10 @@ output_t *output_Find( const output_config_t *p_config )
         if ( !(p_output->config.i_config & OUTPUT_VALID) ) continue;
 
         if ( p_config->i_family != p_output->config.i_family ||
-             memcmp( &p_config->connect_addr, &p_output->config.connect_addr,
-                     i_sockaddr_len ) ||
-             memcmp( &p_config->bind_addr, &p_output->config.bind_addr,
-                     i_sockaddr_len ) )
+            memcmp( &p_config->connect_addr, &p_output->config.connect_addr,
+                    i_sockaddr_len ) ||
+            memcmp( &p_config->bind_addr, &p_output->config.bind_addr,
+                    i_sockaddr_len ) )
             continue;
 
         if ( p_config->i_family == AF_INET6 &&
