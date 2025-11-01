@@ -1,9 +1,9 @@
 /*****************************************************************************
  * dvblast.c
  *****************************************************************************
- * Copyright (C) 2004, 2008-2011, 2015, 2020 VideoLAN
+ * Copyright (C) 2004, 2008-2011, 2015, 2020, 2025 VideoLAN
  *
- * Authors: Christophe Massiot <massiot@via.ecp.fr>
+ * Authors: Christophe Massiot <cmassiot@upipe.org>
  *          Andy Gatward <a.j.gatward@reading.ac.uk>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -157,6 +157,8 @@ void config_Init( output_config_t *p_config )
     p_config->i_if_index_v6 = -1;
     p_config->i_srcport = 0;
 
+    if ( i_mis_is_id == -1 )
+        p_config->i_sid = UINT16_MAX; /* sid is mis */
     p_config->pi_pids = NULL;
     p_config->b_passthrough = false;
     p_config->b_do_remap = false;
@@ -632,7 +634,7 @@ void usage()
         "[-u] [-w] [-U] [-L <latency>] [-E <retention>] [-d <dest IP>[<:port>][/<opts>]*] [-3] "
         "[-z] [-C [-e] [-M <network name>] [-N <network ID>]] [-T] [-j <system charset>] "
         "[-W] [-Y] [-l] [-g <logger ident>] [-Z <mrtg file>] [-V] [-h] [-B <provider_name>] "
-        "[-1 <mis_id>] [-2 <size>] [-5 <DVBS|DVBS2|DVBC_ANNEX_A|DVBC_ANNEX_B|DVBT|DVBT2|ATSC|ISDBT>] -y <ca_dev_number> "
+        "[-1] [-2 <size>] [-5 <DVBS|DVBS2|DVBC_ANNEX_A|DVBC_ANNEX_B|DVBT|DVBT2|ATSC|ISDBT>] -y <ca_dev_number> "
         "[-J <DVB charset>] [-Q <quit timeout>] [-0 pid_mapping] [-x <text|xml>]"
         "[-6 <print period>] [-7 <ES timeout>] [-4 <UDP lock timeout>]" );
 
@@ -665,7 +667,7 @@ void usage()
     msg_Raw( NULL, "  -P --pilot            DVB-S2 Pilot (-1 auto, 0 off, 1 on)" );
     msg_Raw( NULL, "  -R --rolloff          DVB-S2 Rolloff value" );
     msg_Raw( NULL, "    DVB-S2 35=0.35|25=0.25|20=0.20|0=AUTO (default: 35)" );
-    msg_Raw( NULL, "  -1 --multistream-id   Set stream ID (0-2147483648, default: 0)." );
+    msg_Raw( NULL, "  -1 --bbframe-demux    use raw BBframes to demultiplex MIS" );
     msg_Raw( NULL, "     --multistream-id-pls-mode   Set multistream PLS mode (ROOT, GOLD, COMBO, default: ROOT)" );
     msg_Raw( NULL, "     --multistream-id-pls-code   Set multistream PLS code (0-262143, default: 0)" );
     msg_Raw( NULL, "     --multistream-id-is-id      Set multistream IS id (0-255, default: 0)" );
@@ -769,6 +771,7 @@ int main( int i_argc, char **pp_argv )
         { "inversion",       required_argument, NULL, 'I' },
         { "modulation",      required_argument, NULL, 'm' },
         { "pilot",           required_argument, NULL, 'P' },
+        { "bbframe-demux",   no_argument,       NULL, '1' },
         { "multistream-id-pls-mode",  required_argument, NULL, 0x100001 },
         { "multistream-id-pls-code",  required_argument, NULL, 0x100002 },
         { "multistream-id-is-id"   ,  required_argument, NULL, 0x100003 },
@@ -814,7 +817,7 @@ int main( int i_argc, char **pp_argv )
         { 0, 0, 0, 0 }
     };
 
-    while ( (c = getopt_long(i_argc, pp_argv, "q::c:r:t:o:i:a:n:5:f:F:R:s:S:k:v:pb:I:m:P:K:G:H:X:O:uwUTL:E:d:3D:A:lg:zCWYeM:N:j:J:B:x:Q:6:7:4:hVZ:y:0:2:9:", long_options, NULL)) != -1 )
+    while ( (c = getopt_long(i_argc, pp_argv, "q::c:r:t:o:i:a:n:5:f:F:R:s:S:k:v:pb:I:m:P:K:G:H:X:O:uwUTL:E:d:3D:A:lg:zCWYeM:N:j:J:B:x:Q:6:7:4:hVZ:y:0:12:9:", long_options, NULL)) != -1 )
     {
         switch ( c )
         {
@@ -891,9 +894,11 @@ int main( int i_argc, char **pp_argv )
         case '5':
             psz_delsys = optarg;
             break;
+
         case '9':
             dvb_plp_id = strtol( optarg, NULL, 0 );
             break;
+
         case 'f':
             if (optarg && optarg[0] != '-')
                 i_frequency = strtol( optarg, NULL, 0 );
@@ -958,6 +963,14 @@ int main( int i_argc, char **pp_argv )
             i_pilot = strtol( optarg, NULL, 0 );
             break;
 
+        case '1':
+            i_mis_is_id = -1;
+            /* intended pass-through */
+
+        case 'u':
+            b_budget_mode = 1;
+            break;
+
         case 0x100001: // --multistream-id-pls-mode
             psz_mis_pls_mode = optarg;
             if ( !streq(psz_mis_pls_mode, "ROOT") &&
@@ -978,6 +991,11 @@ int main( int i_argc, char **pp_argv )
             break;
 
         case 0x100003: // --multistream-id-is-id
+            if ( i_mis_is_id == -1 )
+            {
+                msg_Err(NULL, "ERROR: --multistream-id-is-id is incompatible with --bbframe-demux");
+                exit(1);
+            }
             i_mis_is_id = strtol( optarg, NULL, 0 );
             if ( i_mis_is_id < 0 || i_mis_is_id > 255 )
             {
@@ -1004,10 +1022,6 @@ int main( int i_argc, char **pp_argv )
 
         case 'H':
             i_hierarchy = strtol( optarg, NULL, 0 );
-            break;
-
-        case 'u':
-            b_budget_mode = 1;
             break;
 
         case 'w':
@@ -1225,7 +1239,10 @@ int main( int i_argc, char **pp_argv )
     {
         case PRINT_XML:
             fprintf(print_fh, "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
-            fprintf(print_fh, "<TS>\n");
+            if ( i_mis_is_id != -1 )
+                fprintf(print_fh, "<TS>\n");
+            else
+                fprintf(print_fh, "<MIS>\n");
             break;
         default:
             break;
@@ -1320,7 +1337,10 @@ int main( int i_argc, char **pp_argv )
     switch (i_print_type)
     {
     case PRINT_XML:
-        fprintf(print_fh, "</TS>\n");
+        if ( i_mis_is_id != -1 )
+            fprintf(print_fh, "</TS>\n");
+        else
+            fprintf(print_fh, "</MIS>\n");
         break;
     default:
         break;

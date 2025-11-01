@@ -309,3 +309,36 @@ unused ones, can be output.
 
 Other options are self-understandable, and are listed in dvblast -h.
 
+
+Descrambling device support
+===========================
+DVBlast can descramble a UDP or RTP stream using a CAM and a descrambling
+PCIe card. You have to select the device with --sec-number:
+dvblast -D 239.255.0.1:1234 --sec-number 0
+
+
+Raw BBFrame support for Multiple Input Stream
+=============================================
+
+Some DVB-S2 transponders (especially on Eutelsat 5°W) use a feature called
+Multiple Input Stream (MIS) to transmit several TS on the same frequency.
+To retrieve a specific stream, you normally use --multistream-id-pls-mode,
+--multistream-id-pls-code and --multistream-id-is-id and the specific
+stream will be retrieved by the demod.
+
+However some cards (at the moment from Digital Devices brand) have a feature
+allowing to bypass the demod, and do the demultiplexing of DVB-S2 BBframes
+in software, which allows to retrieve all streams with a single tuner/demod,
+and also fixes some compatibility issues on some frequencies. See:
+https://support.digital-devices.eu/index.php?article=194&rated=1
+
+This feature is activated with --bbframe-demux. When this flag is set, you
+have to specify the streams you want instead of the SID in the config file,
+for instance:
+239.255.0.1:1234		1	10
+239.255.0.2:1234		1	7
+
+This will send streams 10 and 7 to the given addresses. The second argument
+and the pids are ignored. The whole TS is transmitted, so if you want to
+demultiplex it, use a second DVBlast instance with the -D input:
+dvblast -D 239.255.0.1:1234

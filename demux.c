@@ -1,9 +1,9 @@
 /*****************************************************************************
  * demux.c
  *****************************************************************************
- * Copyright (C) 2004, 2008-2011, 2015-2018 VideoLAN
+ * Copyright (C) 2004, 2008-2011, 2015-2018, 2025 VideoLAN
  *
- * Authors: Christophe Massiot <massiot@via.ecp.fr>
+ * Authors: Christophe Massiot <cmassiot@upipe.orgq>
  *          Andy Gatward <a.j.gatward@reading.ac.uk>
  *          Marian Ďurkovič <md@bts.sk>
  *
@@ -49,6 +49,7 @@
 #include <bitstream/dvb/si.h>
 #include <bitstream/dvb/si_print.h>
 #include <bitstream/mpeg/psi_print.h>
+#include <bitstream/dvb/s2.h>
 
 /*****************************************************************************
  * Local declarations
@@ -101,11 +102,28 @@ typedef struct sid_t
     unsigned long i_packets_passed;
 } sid_t;
 
+struct mis
+{
+    uint8_t i_mis;
+    uint8_t i_matype1;
+    bool b_issy;
+    bool b_npd;
+    uint16_t i_upl;
+
+    uint8_t p_up[TS_SIZE + S2BBDF_ISSY_MAX_SIZE + S2BBDF_NPD_SIZE];
+    uint8_t i_up_size;
+
+    output_t **pp_outputs;
+    int i_nb_outputs;
+};
+
 mtime_t i_wallclock = 0;
 
 static ts_pid_t p_pids[MAX_PIDS];
 static sid_t **pp_sids = NULL;
 static int i_nb_sids = 0;
+static struct mis **pp_miss = NULL;
+static int i_nb_miss = 0;
 
 static PSI_TABLE_DECLARE(pp_current_pat_sections);
 static PSI_TABLE_DECLARE(pp_next_pat_sections);
@@ -115,6 +133,11 @@ static PSI_TABLE_DECLARE(pp_current_nit_sections);
 static PSI_TABLE_DECLARE(pp_next_nit_sections);
 static PSI_TABLE_DECLARE(pp_current_sdt_sections);
 static PSI_TABLE_DECLARE(pp_next_sdt_sections);
+
+struct mis *p_current_mis = NULL;
+static uint8_t i_last_bbframe_counter = UINT8_MAX;
+static uint16_t i_current_mis_dfl = 0;
+
 static mtime_t i_last_dts = -1;
 static int i_demux_fd;
 static uint64_t i_nb_packets = 0;
@@ -266,6 +289,39 @@ static inline sid_t *FindSID( uint16_t i_sid )
             return p_sid;
     }
     return NULL;
+}
+
+/*****************************************************************************
+ * FindMis
+ *****************************************************************************/
+static inline struct mis *FindMis( uint8_t i_mis )
+{
+    int i;
+
+    for ( i = 0; i < i_nb_miss; i++ )
+    {
+        struct mis *p_mis = pp_miss[i];
+        if ( p_mis->i_mis == i_mis )
+            return p_mis;
+    }
+    return NULL;
+}
+
+/*****************************************************************************
+ * NewMis
+ *****************************************************************************/
+static inline struct mis *NewMis( uint8_t i_mis )
+{
+    struct mis *p_mis = malloc( sizeof(struct mis) );
+    p_mis->i_mis = i_mis;
+    p_mis->i_matype1 = 0xff; /* impossible value */
+    p_mis->i_up_size = 0;
+    p_mis->pp_outputs = NULL;
+    p_mis->i_nb_outputs = 0;
+    i_nb_miss++;
+    pp_miss = realloc( pp_miss, sizeof(struct mis *) * i_nb_miss );
+    pp_miss[i_nb_miss - 1] = p_mis;
+    return p_mis;
 }
 
 /*****************************************************************************
@@ -512,6 +568,14 @@ void demux_Close( void )
     }
     free( pp_sids );
 
+    for ( i = 0; i < i_nb_miss; i++ )
+    {
+        struct mis *p_mis = pp_miss[i];
+        free( p_mis->pp_outputs );
+        free( p_mis );
+    }
+    free( pp_miss );
+
 #ifdef HAVE_ICONV
     if (iconv_handle != (iconv_t)-1) {
         iconv_close(iconv_handle);
@@ -634,6 +698,14 @@ static void demux_Handle( block_t *p_ts )
             break;
         }
         pf_Reset();
+    }
+
+    if ( i_mis_is_id == -1 )
+    {
+        /* BBframe mode, only demux 0x80 sections of PID 0x010e */
+        if ( i_pid == S2BBFRAMES_PID )
+            HandlePSIPacket( p_ts->p_ts, p_ts->i_dts );
+        goto demux_out;
     }
 
     if ( i_es_timeout )
@@ -774,6 +846,7 @@ static void demux_Handle( block_t *p_ts )
     if ( output_dup.config.i_config & OUTPUT_VALID )
         output_Put( &output_dup, p_ts );
 
+demux_out:
     if ( b_passthrough )
         fwrite(p_ts->p_ts, TS_SIZE, 1, stdout);
 
@@ -795,6 +868,66 @@ static bool IsIn( const uint16_t *pi_pids, int i_nb_pids, uint16_t i_pid )
 
 void demux_Change( output_t *p_output, const output_config_t *p_config )
 {
+    if ( i_mis_is_id == -1 )
+    {
+        /* Special case for MIS demux - sid == mis, ignore pids */
+        uint16_t i_old_mis = p_output->config.i_sid;
+        uint16_t i_mis = p_config->i_sid;
+
+        p_output->config.i_config = p_config->i_config;
+        p_output->config.i_sid = p_config->i_sid;
+
+        if ( i_mis == i_old_mis )
+            return;
+
+        if ( i_old_mis != UINT16_MAX )
+        {
+            struct mis *p_mis = FindMis( i_old_mis );
+            int j;
+            for ( j = 0; j < p_mis->i_nb_outputs; j++ )
+            {
+                if ( p_mis->pp_outputs[j] == p_output )
+                {
+                    p_mis->pp_outputs[j] = NULL;
+                    break;
+                }
+            }
+        }
+
+        if ( i_mis != UINT16_MAX )
+        {
+            struct mis *p_mis = FindMis( i_mis );
+            int j;
+            if ( p_mis == NULL )
+            {
+                /* Not yet detected but may come later */
+                p_mis = NewMis( i_mis );
+            }
+
+            for ( j = 0; j < p_mis->i_nb_outputs; j++ )
+                if ( p_mis->pp_outputs[j] == p_output )
+                    break;
+
+            if ( j == p_mis->i_nb_outputs )
+            {
+                for ( j = 0; j < p_mis->i_nb_outputs; j++ )
+                    if ( p_mis->pp_outputs[j] == NULL )
+                        break;
+
+                if ( j == p_mis->i_nb_outputs )
+                {
+                    p_mis->i_nb_outputs++;
+                    p_mis->pp_outputs = realloc( p_mis->pp_outputs,
+                                                 sizeof(output_t *)
+                                                  * p_mis->i_nb_outputs );
+                }
+
+                p_mis->pp_outputs[j] = p_output;
+            }
+        }
+        return;
+    }
+
     uint16_t *pi_wanted_pids, *pi_current_pids;
     int i_nb_wanted_pids, i_nb_current_pids;
     uint16_t i_wanted_pcr_pid, i_current_pcr_pid;
@@ -3121,6 +3254,232 @@ out_eit:
 }
 
 /*****************************************************************************
+ * HandleBBFrameSection
+ *****************************************************************************/
+static void HandleBBFrameSection( const uint8_t *p_bbframes, mtime_t i_dts )
+{
+    if ( !s2bbframes_validate( p_bbframes ) )
+    {
+        msg_Warn( NULL, "invalid BBFrame section received" );
+        return;
+    }
+
+    uint8_t i_counter = s2bbframes_get_counter( p_bbframes );
+    uint8_t *p_bbframe = s2bbframes_get_bbframe( p_bbframes );
+    uint16_t i_bbframe_size = s2bbframes_get_length( p_bbframes );
+
+    if ( i_counter == S2BBFRAMES_HEADER_COUNTER )
+    {
+        /* Parse new BBFrame header */
+        if ( i_bbframe_size < S2BBH_SIZE )
+        {
+            msg_Warn( NULL, "too short BBFrame section received" );
+            return;
+        }
+        if ( !s2bbh_validate( p_bbframe ) )
+        {
+            msg_Warn( NULL, "invalid BBFrame header received" );
+            return;
+        }
+        if ( s2bbh_get_tsgs( p_bbframe ) != S2BBH_TSGS_TRANSPORT )
+        {
+            msg_Warn( NULL, "unsupported Generic Stream Input" );
+            return;
+        }
+        if ( s2bbh_is_sis( p_bbframe ) )
+        {
+            msg_Warn( NULL, "unsupported Single Input Stream mode" );
+            return;
+        }
+        if ( s2bbh_get_sync( p_bbframe ) != TS_SYNC )
+        {
+            msg_Warn( NULL, "invalid BBFrame sync received" );
+            return;
+        }
+
+        i_last_bbframe_counter = 0;
+        uint8_t i_mis = s2bbh_get_mis( p_bbframe );
+        bool b_ccm = s2bbh_is_ccm( p_bbframe );
+        bool b_issyi = s2bbh_has_issyi( p_bbframe );
+        bool b_npd = s2bbh_has_npd( p_bbframe );
+        uint8_t i_ro = s2bbh_get_ro( p_bbframe );
+        uint16_t i_upl = s2bbh_get_upl( p_bbframe ) / 8;
+        i_current_mis_dfl = s2bbh_get_dfl( p_bbframe ) / 8;
+        uint16_t i_syncd = s2bbh_get_syncd( p_bbframe ) / 8;
+
+        p_current_mis = FindMis( i_mis );
+        if ( p_current_mis == NULL )
+        {
+            p_current_mis = malloc( sizeof(struct mis) );
+            p_current_mis->i_mis = i_mis;
+            p_current_mis->i_matype1 = 0xff; /* impossible value */
+            p_current_mis->i_up_size = 0;
+            p_current_mis->pp_outputs = NULL;
+            p_current_mis->i_nb_outputs = 0;
+            i_nb_miss++;
+            pp_miss = realloc( pp_miss, sizeof(struct mis *) * i_nb_miss );
+            pp_miss[i_nb_miss - 1] = p_current_mis;
+        }
+
+        if ( p_current_mis->i_matype1 != p_bbframe[0] )
+        {
+            switch (i_print_type) {
+            case PRINT_XML:
+                fprintf(print_fh, "<STREAM mis=\"%"PRIu8"\" mode=\"%s\" issyi=\"%s\" npd=\"%s\" ro=\"%s\" />\n",
+                        i_mis, b_ccm ? "ccm" : "acm",
+                        b_issyi ? "true" : "false",
+                        b_npd ? "true" : "false",
+                        i_ro == S2BBH_RO_35 ? "0.35" :
+                            (i_ro == S2BBH_RO_25 ? "0.25" :
+                                (i_ro == S2BBH_RO_20 ? "0.20" : "reserved")));
+                break;
+            case PRINT_TEXT:
+                fprintf(print_fh, "new stream mis %"PRIu8", %s, %sissyi, %snpd, ro %s\n",
+                        i_mis, b_ccm ? "ccm" : "acm",
+                        b_issyi ? "" : "no ",
+                        b_npd ? "" : "no ",
+                        i_ro == S2BBH_RO_35 ? "0.35" :
+                            (i_ro == S2BBH_RO_25 ? "0.25" :
+                                (i_ro == S2BBH_RO_20 ? "0.20" : "reserved")));
+                break;
+            default:
+                break;
+            }
+            p_current_mis->i_matype1 = p_bbframe[0];
+            p_current_mis->b_issy = b_issyi;
+            p_current_mis->b_npd = b_npd;
+            p_current_mis->i_upl = i_upl;
+        }
+
+        if ( i_syncd == UINT16_MAX / 8)
+        {
+            /* BBFrame without UP */
+            return;
+        }
+
+        if ( !p_current_mis->i_nb_outputs )
+        {
+            p_current_mis = NULL;
+            return;
+        }
+
+        p_bbframe += S2BBH_SIZE;
+        i_bbframe_size -= S2BBH_SIZE;
+
+        if ( (i_syncd + 1) % p_current_mis->i_upl !=
+             (p_current_mis->i_upl -
+              p_current_mis->i_up_size) % p_current_mis->i_upl )
+        {
+            msg_Warn( NULL, "fixed a BBframe disalignment (MIS %"PRIu8")",
+                      p_current_mis->i_mis );
+            p_current_mis->i_up_size = 0;
+            p_bbframe += i_syncd + 1;
+            i_bbframe_size -= i_syncd + 1;
+            i_current_mis_dfl -= i_syncd + 1;
+        }
+    }
+    else if ( p_current_mis == NULL )
+    {
+        /* Partial frame, abort */
+        return;
+    }
+    else if ( i_last_bbframe_counter + 1 != i_counter )
+    {
+        msg_Warn( NULL, "BBFrame discontinuity on MIS %"PRIu8" expected_counter %u got %u",
+                  p_current_mis->i_mis, i_last_bbframe_counter + 1,
+                  i_counter );
+        p_current_mis->i_up_size = 0;
+        p_current_mis = NULL;
+        return;
+    }
+    else
+        i_last_bbframe_counter = i_counter;
+
+    if ( i_bbframe_size > i_current_mis_dfl )
+    {
+        /* Remove padding */
+        i_bbframe_size = i_current_mis_dfl;
+    }
+
+    while ( p_current_mis->i_up_size + i_bbframe_size >= p_current_mis->i_upl )
+    {
+        /* Immediately output TS packet to avoid bursting issues */
+        uint16_t i_remainder = p_current_mis->i_upl - p_current_mis->i_up_size;
+        memcpy( p_current_mis->p_up + p_current_mis->i_up_size, p_bbframe,
+                i_remainder );
+        p_bbframe += i_remainder;
+        i_bbframe_size -= i_remainder;
+        i_current_mis_dfl -= i_remainder;
+        p_current_mis->i_up_size = 0;
+
+        block_t *p_ts = block_New();
+        p_ts->i_dts = i_dts;
+        p_ts->p_ts[0] = TS_SYNC;
+        memcpy( p_ts->p_ts + 1, p_current_mis->p_up, TS_SIZE - 1 );
+
+        /* Check CRC (last octet of UP after extra data) */
+        if ( s2bbcrc_check( p_current_mis->p_up, p_current_mis->i_upl - 1 )
+              != p_current_mis->p_up[p_current_mis->i_upl - 1] )
+            ts_set_transporterror( p_ts->p_ts );
+
+        for ( int i = 0; i < p_current_mis->i_nb_outputs; i++ )
+        {
+            output_t *p_output = p_current_mis->pp_outputs[i];
+
+            if ( p_output == NULL ||
+                 !(p_output->config.i_config & OUTPUT_VALID) )
+                continue;
+
+            output_Put( p_output, p_ts );
+        }
+
+        p_ts->i_refcount--;
+        if ( !p_ts->i_refcount )
+            block_Delete( p_ts );
+
+        if ( p_current_mis->b_npd )
+        {
+            /* Handle Null Packet Deletion */
+            uint8_t i_null_packets =
+                p_current_mis->p_up[p_current_mis->i_upl - 2];
+            if ( i_null_packets )
+            {
+                block_t *p_ts = block_New();
+                p_ts->i_dts = i_dts;
+                ts_pad( p_ts->p_ts );
+
+                while ( i_null_packets-- )
+                {
+                    for ( int i = 0; i < p_current_mis->i_nb_outputs; i++ )
+                    {
+                        output_t *p_output = p_current_mis->pp_outputs[i];
+
+                        if ( p_output == NULL ||
+                             !(p_output->config.i_config & OUTPUT_VALID) )
+                            continue;
+
+                        output_Put( p_output, p_ts );
+                    }
+                }
+
+                p_ts->i_refcount--;
+                if ( !p_ts->i_refcount )
+                    block_Delete( p_ts );
+            }
+        }
+    }
+
+    /* Copy the rest of the BBFrame to the temporary buffer */
+    if ( i_bbframe_size )
+    {
+        memcpy( p_current_mis->p_up + p_current_mis->i_up_size, p_bbframe,
+                i_bbframe_size );
+        p_current_mis->i_up_size += i_bbframe_size;
+        i_current_mis_dfl -= i_bbframe_size;
+    }
+}
+
+/*****************************************************************************
  * HandleSection
  *****************************************************************************/
 static void HandleSection( uint16_t i_pid, uint8_t *p_section, mtime_t i_dts )
@@ -3140,6 +3499,13 @@ static void HandleSection( uint16_t i_pid, uint8_t *p_section, mtime_t i_dts )
         default:
             break;
         }
+        free( p_section );
+        return;
+    }
+
+    if ( i_mis_is_id == -1 )
+    {
+        HandleBBFrameSection( p_section, i_dts );
         free( p_section );
         return;
     }

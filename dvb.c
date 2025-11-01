@@ -1,9 +1,9 @@
 /*****************************************************************************
  * dvb.c: linux-dvb input for DVBlast
  *****************************************************************************
- * Copyright (C) 2008-2010, 2015 VideoLAN
+ * Copyright (C) 2008-2010, 2015, 2025 VideoLAN
  *
- * Authors: Christophe Massiot <massiot@via.ecp.fr>
+ * Authors: Christophe Massiot <cmassiot@upipe.org>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1415,7 +1415,8 @@ static void FrontendSet( bool b_init )
             p->props[IDX_DVBS2_ROLLOFF].u.data = GetRollOff();
             if ( i_mis_pls_code )
             {
-                p->props[IDX_DVBS2_STREAM_ID].u.data = i_mis_is_id;
+                p->props[IDX_DVBS2_STREAM_ID].u.data =
+                    i_mis_is_id != -1 ? i_mis_is_id : 0x80000000;
                 p->props[IDX_DVBS2_SSI].u.data = GetSSI();
             }
         }
@@ -1427,10 +1428,16 @@ static void FrontendSet( bool b_init )
         p->props[FEC_INNER].u.data = GetFECInner(info.caps);
         p->props[FREQUENCY].u.data = FrontendDoDiseqc();
 
-        msg_Dbg( NULL, "tuning DVB-S frontend to f=%d srate=%d inversion=%d fec=%d rolloff=%d modulation=%s pilot=%d pls-mode: %s pls-code: %d is-id: %u",
-                 i_frequency, i_srate, i_inversion, i_fec, i_rolloff,
-                 psz_modulation == NULL ? "legacy" : psz_modulation, i_pilot,
-                 psz_mis_pls_mode, i_mis_pls_code, i_mis_is_id );
+        if ( i_mis_is_id == -1 )
+            msg_Dbg( NULL, "tuning DVB-S frontend in BBFrame mode to f=%d srate=%d inversion=%d fec=%d rolloff=%d modulation=%s pilot=%d pls-mode: %s pls-code: %d",
+                    i_frequency, i_srate, i_inversion, i_fec, i_rolloff,
+                    psz_modulation == NULL ? "legacy" : psz_modulation, i_pilot,
+                    psz_mis_pls_mode, i_mis_pls_code );
+        else
+            msg_Dbg( NULL, "tuning DVB-S frontend to f=%d srate=%d inversion=%d fec=%d rolloff=%d modulation=%s pilot=%d pls-mode: %s pls-code: %d is-id: %u",
+                    i_frequency, i_srate, i_inversion, i_fec, i_rolloff,
+                    psz_modulation == NULL ? "legacy" : psz_modulation, i_pilot,
+                    psz_mis_pls_mode, i_mis_pls_code, i_mis_is_id );
         break;
 
     case SYS_ATSC:

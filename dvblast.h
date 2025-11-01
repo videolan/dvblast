@@ -1,9 +1,9 @@
 /*****************************************************************************
  * dvblast.h
  *****************************************************************************
- * Copyright (C) 2004, 2008-2011, 2015-2016, 2020 VideoLAN
+ * Copyright (C) 2004, 2008-2011, 2015-2016, 2020,2025 VideoLAN
  *
- * Authors: Christophe Massiot <massiot@via.ecp.fr>
+ * Authors: Christophe Massiot <cmassiot@upipe.org>
  *          Andy Gatward <a.j.gatward@reading.ac.uk>
  *
  * This program is free software; you can redistribute it and/or modify
