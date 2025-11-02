@@ -3,7 +3,7 @@
  *****************************************************************************
  * Copyright (C) 2004, 2008-2011, 2015-2018, 2025 VideoLAN
  *
- * Authors: Christophe Massiot <cmassiot@upipe.orgq>
+ * Authors: Christophe Massiot <cmassiot@upipe.org>
  *          Andy Gatward <a.j.gatward@reading.ac.uk>
  *          Marian Ďurkovič <md@bts.sk>
  *
