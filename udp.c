@@ -61,6 +61,7 @@ static uint16_t i_seqnum = 0;
 static bool b_sync = false;
 static mtime_t i_last_print = 0;
 static struct sockaddr_storage last_addr;
+static bool b_non_ts_warned = false;
 
 /*****************************************************************************
  * Local prototypes
@@ -373,8 +374,12 @@ static void udp_Read(struct ev_loop *loop, struct ev_io *w, int revents)
 
         if ( !rtp_check_hdr(p_rtp_hdr) )
             msg_Warn( NULL, "invalid RTP packet received" );
-        if ( rtp_get_type(p_rtp_hdr) != RTP_TYPE_TS )
-            msg_Warn( NULL, "non-TS RTP packet received" );
+        if ( rtp_get_type(p_rtp_hdr) != RTP_TYPE_TS ) {
+            if ( !b_non_ts_warned )
+                msg_Warn( NULL, "non-TS RTP packet received, dropping..." );
+            b_non_ts_warned = true;
+            goto err;
+        }
         rtp_get_ssrc(p_rtp_hdr, pi_new_ssrc);
         if ( !memcmp( pi_ssrc, pi_new_ssrc, 4 * sizeof(uint8_t) ) )
         {
