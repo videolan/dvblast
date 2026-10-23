@@ -35,7 +35,7 @@ typedef enum error_source
 ULONG WINAPI Dc_GetLastError (ERRORSOURCE *pErrorSource);
 
 #define DC_ERRORCODE_MASK      0x2FFF0000                                            /* facility mask */
-#define DCERR_TIMEOUT                  0x80000201  /*! A time-out occured */
+#define DCERR_TIMEOUT                  0x80000201  /*! A time-out occurred */
 
 
 #endif

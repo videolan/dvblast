@@ -149,7 +149,7 @@ void mrtgAnalyse(block_t * p_ts)
         // dump is a bit late, the next one still occurs at the correct time.
         // However, if there is a long gap (e.g. because the channel has
         // stopped for some time), then just rebase the timing to the current
-        // time.  I've chosen MRTG_INTERVAL as the long gap - this is arbitary
+        // time.  I've chosen MRTG_INTERVAL as the long gap - this is arbitrary
         if ((now.tv_sec - mrtg_time.tv_sec) > MRTG_INTERVAL) {
             msg_Dbg(NULL, "Dump is %d seconds late - reset timing\n",
                     (int) (now.tv_sec - mrtg_time.tv_sec));

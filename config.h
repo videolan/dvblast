@@ -52,7 +52,7 @@
 #define EXIT_STATUS_FRONTEND_TIMEOUT 100
 #define DEFAULT_UDP_LOCK_TIMEOUT 5000000 /* 5 s */
 
-// Compatability defines
+// Compatibility defines
 #if defined(__APPLE__)
 #define ip_mreqn ip_mreq
 #endif
