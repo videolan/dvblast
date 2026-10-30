@@ -11,6 +11,12 @@ It transforms DVBlast into a modern broadcast-grade DVB-to-IP gateway while main
 
 ---
 
+<p align="center">
+  <img src="docs/screenshot.png" alt="DVBlast Web Gateway Dashboard" width="100%">
+</p>
+
+---
+
 ## 🌟 Key Features
 
 * **🌐 Embedded Web Management Gateway (`--web-port 8088`)**
