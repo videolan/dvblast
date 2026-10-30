@@ -104,7 +104,7 @@ DVBlast Web Gateway supports all original DVBlast flags plus new gateway flags:
 ### 1. Transponder Grouping
 * Each physical DVB adapter is displayed as an independent row with a clean header:
   ```
-  EMTEK JAKARTA • DVB-T2 @ 498.0 MHZ • INGEST: 32.50 MBPS (7 STREAMS)
+  DVB-T2 MUX-A (UHF CH 24) • DVB-T2 @ 498.0 MHZ • INGEST: 32.50 MBPS (7 STREAMS)
   ```
 * Under the transponder header:
   * **Adapter Card**: Displays live Lock status, Signal Strength (**S**) bar, SNR Quality (**Q**) bar, BER, and Ingest bitrate.
