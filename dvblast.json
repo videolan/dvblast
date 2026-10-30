@@ -6,7 +6,7 @@
   "adapters": [
     {
       "id": "adapter_0",
-      "name": "EMTEK Jakarta",
+      "name": "DVB-T2 MUX-A (UHF CH 24)",
       "enabled": true,
       "adapter_idx": 0,
       "frontend_idx": 0,
@@ -24,7 +24,7 @@
     },
     {
       "id": "003",
-      "name": "MNC",
+      "name": "DVB-T2 MUX-B (UHF CH 28)",
       "enabled": true,
       "adapter_idx": 1,
       "frontend_idx": 0,
@@ -42,7 +42,7 @@
     },
     {
       "id": "adapter_2",
-      "name": "VIVA Jakarta",
+      "name": "DVB-T2 MUX-C (UHF CH 34)",
       "enabled": true,
       "adapter_idx": 2,
       "frontend_idx": 0,
@@ -62,7 +62,7 @@
   "streams": [
     {
       "id": "spts_20",
-      "name": "SIN PO tv HD",
+      "name": "World News 24 HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -78,7 +78,7 @@
     },
     {
       "id": "spts_22",
-      "name": "REPUBLIKA TV",
+      "name": "Global Cinema HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -94,7 +94,7 @@
     },
     {
       "id": "spts_107",
-      "name": "KOMPASTV HD",
+      "name": "Discovery Life HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -110,7 +110,7 @@
     },
     {
       "id": "spts_30266",
-      "name": "SCTV HD",
+      "name": "Sports Prime HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -126,7 +126,7 @@
     },
     {
       "id": "spts_30267",
-      "name": "INDOSIAR HD",
+      "name": "Action Premiere HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -142,7 +142,7 @@
     },
     {
       "id": "spts_30268",
-      "name": "MOJI HD",
+      "name": "Horizon TV HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -158,7 +158,7 @@
     },
     {
       "id": "spts_30269",
-      "name": "MENTARI HD",
+      "name": "Family Channel HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -174,7 +174,7 @@
     },
     {
       "id": "spts_1",
-      "name": "TVONE HD",
+      "name": "Global News One HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -190,7 +190,7 @@
     },
     {
       "id": "spts_3",
-      "name": "GTV HD",
+      "name": "Eurovision News HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -206,7 +206,7 @@
     },
     {
       "id": "spts_2",
-      "name": "MNCTV HD",
+      "name": "Metropolis TV HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -222,7 +222,7 @@
     },
     {
       "id": "spts_4",
-      "name": "iNews HD",
+      "name": "Documentary Plus HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -238,7 +238,7 @@
     },
     {
       "id": "spts_8",
-      "name": "MDTV",
+      "name": "Classic Cinema HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -254,7 +254,7 @@
     },
     {
       "id": "spts_10",
-      "name": "BERITA NASIONAL TV",
+      "name": "National Pulse HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -270,7 +270,7 @@
     },
     {
       "id": "spts_11",
-      "name": "JAGANTARA",
+      "name": "Apex Sports HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
@@ -286,7 +286,7 @@
     },
     {
       "id": "spts_7",
-      "name": "ANTV HD",
+      "name": "Starlight TV HD",
       "enabled": true,
       "type": "spts",
       "input_url": "",
