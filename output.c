@@ -37,6 +37,8 @@
 #include <ev.h>
 
 #include "dvblast.h"
+#include "softcam_csa.h"
+#include "web_state.h"
 
 #include <bitstream/mpeg/ts.h>
 #include <bitstream/ietf/rtp.h>
@@ -463,6 +465,13 @@ static void output_Flush( output_t *p_output )
         msg_Err( NULL, "couldn't writev to %s (%s)",
                  p_output->config.psz_displayname, strerror(errno) );
     }
+    else
+    {
+        p_output->i_sent_packets += p_packet->i_depth;
+        p_output->i_sent_bytes += (p_packet->i_depth * TS_SIZE);
+        web_state_record_output( p_output->sz_stream_id[0] ? p_output->sz_stream_id : p_output->config.psz_displayname,
+                                 p_packet->i_depth * TS_SIZE, p_packet->i_depth );
+    }
     /* Update the wallclock because writev() can take some time. */
     i_wallclock = mdate();
 
@@ -491,6 +500,10 @@ void output_Put( output_t *p_output, block_t *p_block )
 {
     int i_block_cnt = output_BlockCount( p_output );
     packet_t *p_packet;
+
+    /* SoftCAM Descramble hook */
+    if ( p_output->config.i_sid )
+        softcam_csa_descramble( p_output->config.i_sid, p_block->p_ts );
 
     p_block->i_refcount++;
 

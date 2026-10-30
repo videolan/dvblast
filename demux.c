@@ -33,11 +33,13 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 #include <ev.h>
 
 #include "dvblast.h"
 #include "en50221.h"
 #include "mrtg-cnt.h"
+#include "web_state.h"
 
 #ifdef HAVE_ICONV
 #include <iconv.h>
@@ -148,6 +150,7 @@ static int i_tuner_errors = 0;
 static mtime_t i_last_error = 0;
 static mtime_t i_last_reset = 0;
 static struct ev_timer print_watcher;
+static bool b_scan_completed = false;
 
 #ifdef HAVE_ICONV
 static iconv_t iconv_handle = (iconv_t)-1;
@@ -495,8 +498,9 @@ void demux_Open( void )
         p_pids[i].i_pes_status = -1;
     }
 
-    if ( b_budget_mode )
-        i_demux_fd = pf_SetFilter(8192);
+    /* In budget mode, wildcard TS filter (PID 0x2000) is managed dynamically by dvb_TuneFrontend
+     * to ensure correct adapter index and clean lifecycle during retune/disable */
+    (void)i_demux_fd;
 
     psi_table_init( pp_current_pat_sections );
     psi_table_init( pp_next_pat_sections );
@@ -3152,6 +3156,11 @@ static void HandleSDT( mtime_t i_dts )
             fprintf(print_fh, "\n");
     }
 
+    if ( !b_scan_completed )
+    {
+        demux_ExtractDiscoveredChannels();
+    }
+
 out_sdt:
     SendSDT( i_dts );
 }
@@ -3851,3 +3860,136 @@ inline void demux_get_PIDS_info( uint8_t *p_data ) {
     for (i_pid = 0; i_pid < MAX_PIDS; i_pid++ )
         demux_get_PID_info( i_pid, p_data + ( i_pid * sizeof(ts_pid_info_t) ) );
 }
+
+void demux_TriggerScan( void )
+{
+    b_scan_completed = false;
+    demux_ExtractDiscoveredChannels();
+}
+
+void demux_ExtractDiscoveredChannels( void )
+{
+    if ( !psi_table_validate( pp_current_sdt_sections ) )
+        return;
+
+    int total_services = 0;
+    int resolved_pmts = 0;
+
+    uint8_t i_last_section = psi_table_get_lastsection( pp_current_sdt_sections );
+    for ( int i = 0; i <= i_last_section; i++ )
+    {
+        uint8_t *p_section = psi_table_get_section( pp_current_sdt_sections, i );
+        if ( !p_section ) continue;
+
+        uint8_t *p_service;
+        int j = 0;
+        while ( (p_service = sdt_get_service( p_section, j++ )) != NULL )
+        {
+            total_services++;
+            uint16_t i_sid = sdtn_get_sid( p_service );
+            channel_info_t ch;
+            memset( &ch, 0, sizeof(ch) );
+            ch.service_id = i_sid;
+
+            /* Extract descriptors */
+            uint8_t *p_desc;
+            int k = 0;
+            while ( (p_desc = descs_get_desc( sdtn_get_descs( p_service ), k++ )) != NULL )
+            {
+                if ( desc_get_tag( p_desc ) == 0x48 && desc48_validate( p_desc ) )
+                {
+                    uint8_t i_prov_len = 0, i_serv_len = 0;
+                    const uint8_t *p_prov = desc48_get_provider( p_desc, &i_prov_len );
+                    const uint8_t *p_serv = desc48_get_service( p_desc, &i_serv_len );
+                    if ( p_serv && i_serv_len > 0 )
+                    {
+                        char *name = demux_Iconv( NULL, psz_native_charset, (char *)p_serv, i_serv_len );
+                        if ( name ) {
+                            snprintf( ch.name, sizeof(ch.name), "%s", name );
+                            free( name );
+                        }
+                    }
+                    if ( p_prov && i_prov_len > 0 )
+                    {
+                        char *prov = demux_Iconv( NULL, psz_native_charset, (char *)p_prov, i_prov_len );
+                        if ( prov ) {
+                            snprintf( ch.provider, sizeof(ch.provider), "%s", prov );
+                            free( prov );
+                        }
+                    }
+                }
+            }
+
+            /* Lookup PMT */
+            sid_t *p_sid = FindSID( i_sid );
+            if ( p_sid && p_sid->p_current_pmt && pmt_validate( p_sid->p_current_pmt ) )
+            {
+                resolved_pmts++;
+                ch.pmt_pid = p_sid->i_pmt_pid;
+                uint8_t *p_es;
+                int es_idx = 0;
+                while ( (p_es = pmt_get_es( p_sid->p_current_pmt, es_idx++ )) != NULL )
+                {
+                    uint16_t pid = pmtn_get_pid( p_es );
+                    uint8_t stype = pmtn_get_streamtype( p_es );
+                    if ( stype == 0x01 || stype == 0x02 || stype == 0x1B || stype == 0x24 )
+                    {
+                        if ( ch.video_pid == 0 ) {
+                            ch.video_pid = pid;
+                            ch.video_type = stype;
+                        }
+                    }
+                    else if ( stype == 0x03 || stype == 0x04 || stype == 0x0F || stype == 0x11 || stype == 0x06 || stype == 0x81 )
+                    {
+                        if ( ch.num_audio_pids < MAX_AUDIO_PIDS ) {
+                            ch.audio_pids[ch.num_audio_pids] = pid;
+                            ch.audio_types[ch.num_audio_pids] = stype;
+                            ch.num_audio_pids++;
+                        }
+                    }
+                }
+                ch.scrambled = PMTNeedsDescrambling( p_sid->p_current_pmt );
+            }
+
+            web_state_add_channel( &ch );
+        }
+    }
+
+    /* Once SDT services are extracted and PMTs are resolved, mark scan complete (run only 1 time) */
+    if ( total_services > 0 && resolved_pmts > 0 )
+    {
+        b_scan_completed = true;
+    }
+}
+
+void demux_ResetTables( void )
+{
+    b_scan_completed = false;
+    for (int i = 0; i < MAX_PIDS; i++) {
+        if (p_pids[i].i_demux_fd >= 0) {
+            close(p_pids[i].i_demux_fd);
+            p_pids[i].i_demux_fd = -1;
+        }
+    }
+
+    psi_table_free( pp_current_pat_sections );
+    psi_table_init( pp_current_pat_sections );
+    psi_table_free( pp_next_pat_sections );
+    psi_table_init( pp_next_pat_sections );
+
+    psi_table_free( pp_current_cat_sections );
+    psi_table_init( pp_current_cat_sections );
+    psi_table_free( pp_next_cat_sections );
+    psi_table_init( pp_next_cat_sections );
+
+    psi_table_free( pp_current_nit_sections );
+    psi_table_init( pp_current_nit_sections );
+    psi_table_free( pp_next_nit_sections );
+    psi_table_init( pp_next_nit_sections );
+
+    psi_table_free( pp_current_sdt_sections );
+    psi_table_init( pp_current_sdt_sections );
+    psi_table_free( pp_next_sdt_sections );
+    psi_table_init( pp_next_sdt_sections );
+}
+

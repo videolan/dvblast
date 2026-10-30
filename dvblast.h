@@ -191,6 +191,12 @@ typedef struct output_t
     uint16_t pi_freepids[MAX_PIDS];   // used where multiple streams of the same type are used
 
     struct udprawpkt raw_pkt_header;
+
+    /* web gateway & pacing */
+    bool b_pacing;
+    char sz_stream_id[64];
+    uint64_t i_sent_packets;
+    uint64_t i_sent_bytes;
 } output_t;
 
 typedef struct ts_pid_info {
@@ -279,7 +285,12 @@ extern void (*pf_UnsetFilter)( int i_fd, uint16_t i_pid );
  *****************************************************************************/
 
 void config_Init( output_config_t *p_config );
+void config_Defaults( output_config_t *p_config );
+bool config_ParseHost( output_config_t *p_config, char *psz_string );
 void config_Free( output_config_t *p_config );
+void demux_ExtractDiscoveredChannels( void );
+void demux_TriggerScan( void );
+void demux_ResetTables( void );
 
 /* Connect/Disconnect from syslogd */
 void msg_Connect( const char *ident );
@@ -321,6 +332,15 @@ void dvb_OpenDvr( void );
 void dvb_OpenSec( void );
 void dvb_WriteSec( block_t *p_ts );
 uint8_t dvb_FrontendStatus( uint8_t *p_answer, ssize_t *pi_size );
+extern int i_frontend;
+extern float dvb_live_signal_dbm;
+extern float dvb_live_snr_db;
+void dvb_CloseDevices( void );
+void dvb_ReleaseAll( void );
+bool dvb_TuneFrontend(int adapter, int frontend, uint64_t freq_hz, int bw_mhz,
+                      const char *delsys, int stream_id, const char *modulation,
+                      const char *guard, const char *transmit, int symbol_rate,
+                      int voltage, int diseqc, int tone);
 
 void udp_Open( void );
 void udp_Reset( void );

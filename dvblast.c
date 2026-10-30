@@ -37,6 +37,7 @@
 #include <signal.h>
 #include <getopt.h>
 #include <errno.h>
+#include <sys/prctl.h>
 
 #include <ev.h>
 
@@ -50,6 +51,12 @@
 #include <bitstream/ietf/rtp.h>
 
 #include "mrtg-cnt.h"
+#include "en50221.h"
+#include "comm.h"
+#include "softcam_csa.h"
+#include "web_state.h"
+#include "web_manager.h"
+#include "web_server.h"
 
 /*****************************************************************************
  * Local declarations
@@ -63,6 +70,48 @@ static const char *psz_conf_file = NULL;
 char *psz_srv_socket = NULL;
 static int i_priority = -1;
 int i_adapter = 0;
+
+/* Web Gateway & Telemetry */
+static int i_web_port = 8088;
+static char *psz_web_host = NULL;
+static char *psz_json_config = NULL;
+static bool b_web_enabled = true;
+static struct ev_timer web_telemetry_watcher;
+static struct ev_async web_async_watcher;
+pthread_t g_main_thread_id;
+extern int i_frontend;
+void web_manager_handle_async_action(void);
+
+static void web_async_cb(struct ev_loop *loop, struct ev_async *w, int revents)
+{
+    (void)loop; (void)w; (void)revents;
+    web_manager_handle_async_action();
+}
+
+void web_manager_notify_async(void)
+{
+    ev_async_send(event_loop, &web_async_watcher);
+}
+
+static void web_telemetry_cb(struct ev_loop *loop, struct ev_timer *w, int revents)
+{
+    (void)loop; (void)w; (void)revents;
+    if ( pf_Open == dvb_Open && i_frontend >= 0 )
+    {
+        struct ret_frontend_status st;
+        ssize_t sz = sizeof(st);
+        if ( dvb_FrontendStatus((uint8_t *)&st, &sz) == RET_FRONTEND_STATUS )
+        {
+            bool locked = (st.i_status & FE_HAS_LOCK) != 0;
+            uint16_t sig_pct = (uint16_t)((st.i_strength * 100) / 65535);
+            web_state_update_adapter_signal_ext(i_adapter, locked, sig_pct,
+                                                dvb_live_snr_db, dvb_live_signal_dbm,
+                                                st.i_ber, 0);
+        }
+    }
+    web_manager_poll_secondary_telemetry();
+    web_state_calc_bitrates();
+}
 int i_fenum = 0;
 int i_canum = 0;
 int i_secnum = -1;
@@ -90,7 +139,7 @@ int i_transmission = -1;
 int i_hierarchy = -1;
 mtime_t i_frontend_timeout_duration = DEFAULT_FRONTEND_TIMEOUT;
 mtime_t i_quit_timeout_duration = 0;
-int b_budget_mode = 0;
+int b_budget_mode = 1;
 int b_any_type = 0;
 int b_select_pmts = 0;
 int b_random_tsid = 0;
@@ -178,7 +227,7 @@ void config_Free( output_config_t *p_config )
     free( p_config->psz_srcaddr );
 }
 
-static void config_Defaults( output_config_t *p_config )
+void config_Defaults( output_config_t *p_config )
 {
     config_Init( p_config );
 
@@ -278,7 +327,7 @@ static void config_strdvb( dvb_string_t *p_dvb_string, const char *psz_string,
     free(p_iconv);
 }
 
-static bool config_ParseHost( output_config_t *p_config, char *psz_string )
+bool config_ParseHost( output_config_t *p_config, char *psz_string )
 {
     struct addrinfo *p_ai;
     int i_mtu;
@@ -708,6 +757,10 @@ void usage()
     msg_Raw( NULL, "  -0 --pidmap <pmt_pid,audio_pid,video_pid,spu_pid>");
 
     msg_Raw( NULL, "Misc:" );
+    msg_Raw( NULL, "  --web-port <port>     port for embedded Web UI & REST API (default: 8088)" );
+    msg_Raw( NULL, "  --web-host <host>     listen host for Web UI (default: 0.0.0.0)" );
+    msg_Raw( NULL, "  --json-config <file>  path to persistent JSON config file (default: dvblast.json)" );
+    msg_Raw( NULL, "  --disable-web         disable embedded web server" );
     msg_Raw( NULL, "  -h --help             display this full help" );
     msg_Raw( NULL, "  -i --priority <RT priority>" );
     msg_Raw( NULL, "  -j --system-charset   character set used for printing messages (default UTF-8//IGNORE)" );
@@ -814,6 +867,10 @@ int main( int i_argc, char **pp_argv )
         { "ca-number",       required_argument, NULL, 'y' },
         { "pidmap",          required_argument, NULL, '0' },
         { "dvr-buf-size",    required_argument, NULL, '2' },
+        { "web-port",        required_argument, NULL, 0x100010 },
+        { "web-host",        required_argument, NULL, 0x100011 },
+        { "json-config",     required_argument, NULL, 0x100012 },
+        { "disable-web",     no_argument,       NULL, 0x100013 },
         { 0, 0, 0, 0 }
     };
 
@@ -892,7 +949,8 @@ int main( int i_argc, char **pp_argv )
             break;
 
         case '5':
-            psz_delsys = optarg;
+            free( psz_delsys );
+            psz_delsys = strdup( optarg );
             break;
 
         case '9':
@@ -956,7 +1014,8 @@ int main( int i_argc, char **pp_argv )
             break;
 
         case 'm':
-            psz_modulation = optarg;
+            free( psz_modulation );
+            psz_modulation = strdup( optarg );
             break;
 
         case 'P':
@@ -1213,12 +1272,32 @@ int main( int i_argc, char **pp_argv )
             i_dvr_buffer_size *= TS_SIZE;
             break;
 #endif
+        case 0x100010:
+            i_web_port = atoi( optarg );
+            break;
+        case 0x100011:
+            psz_web_host = optarg;
+            break;
+        case 0x100012:
+            psz_json_config = optarg;
+            break;
+        case 0x100013:
+            b_web_enabled = false;
+            break;
         case 'h':
         default:
             usage();
         }
     }
-    if ( optind < i_argc || pf_Open == NULL )
+    if ( pf_Open == NULL )
+    {
+        i_adapter = 0;
+        pf_Open = dvb_Open;
+        pf_Reset = dvb_Reset;
+        pf_SetFilter = dvb_SetFilter;
+        pf_UnsetFilter = dvb_UnsetFilter;
+    }
+    if ( optind < i_argc )
         usage();
 
     if ( b_enable_syslog )
@@ -1232,6 +1311,14 @@ int main( int i_argc, char **pp_argv )
 
     if ( i_verbose )
         DisplayVersion();
+
+    char proc_name[16];
+    if ( b_web_enabled ) {
+        snprintf(proc_name, sizeof(proc_name), "dvblast-master");
+    } else {
+        snprintf(proc_name, sizeof(proc_name), "dvblast-ad%d", i_adapter);
+    }
+    prctl(PR_SET_NAME, proc_name, 0, 0, 0);
 
     msg_Warn( NULL, "restarting" );
 
@@ -1293,6 +1380,8 @@ int main( int i_argc, char **pp_argv )
 
     srand( time(NULL) * getpid() );
 
+    web_state_init_shm( b_web_enabled );
+
     demux_Open();
 
     // init the mrtg logfile
@@ -1322,13 +1411,39 @@ int main( int i_argc, char **pp_argv )
         ev_timer_start(event_loop, &quit_watcher);
     }
 
+    g_main_thread_id = pthread_self();
+    ev_async_init(&web_async_watcher, web_async_cb);
+    ev_async_start(event_loop, &web_async_watcher);
+
     outputs_Init();
 
+    /* Initialize SoftCAM, Gateway State, and Web Server */
+    softcam_csa_init();
+    if ( b_web_enabled ) {
+        web_state_init( i_web_port, psz_web_host, psz_json_config ? psz_json_config : "dvblast.json" );
+        web_state_load_json( psz_json_config ? psz_json_config : "dvblast.json" );
+        web_manager_sync_outputs();
+        web_server_start( i_web_port, psz_web_host );
+
+        ev_timer_init(&web_telemetry_watcher, web_telemetry_cb, 1.0, 1.0);
+        ev_timer_start(event_loop, &web_telemetry_watcher);
+    }
+
     ev_run(event_loop, 0);
+
+    if ( b_web_enabled ) {
+        ev_timer_stop(event_loop, &web_telemetry_watcher);
+        web_server_stop();
+        web_manager_cleanup();
+        web_state_cleanup();
+    }
+    ev_async_stop(event_loop, &web_async_watcher);
+    softcam_csa_cleanup();
 
     mrtgClose();
     outputs_Close( i_nb_outputs );
     demux_Close();
+    dvb_ReleaseAll();
     dvb_string_clean( &network_name );
     dvb_string_clean( &provider_name );
     if ( conf_iconv != (iconv_t)-1 )
