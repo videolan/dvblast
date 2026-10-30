@@ -60,6 +60,7 @@
 #include "dvblast.h"
 #include "en50221.h"
 #include "comm.h"
+#include "web_state.h"
 
 #include <bitstream/common.h>
 
@@ -72,7 +73,11 @@
 
 int i_dvr_buffer_size = DVR_BUFFER_SIZE;
 
-static int i_frontend, i_dvr, i_sec;
+int i_frontend = -1;
+float dvb_live_signal_dbm = -100.0f;
+float dvb_live_snr_db = 0.0f;
+static int i_demux_wildcard_fd = -1;
+static int i_dvr = -1, i_sec = -1;
 static struct ev_io frontend_watcher, dvr_watcher;
 static struct ev_timer lock_watcher, mute_watcher, print_watcher;
 static fe_status_t i_last_status;
@@ -106,7 +111,7 @@ void dvb_OpenDvr( void )
         {
             msg_Err(NULL, "opening device %s failed (%s)", psz_tmp,
                     strerror(errno));
-            exit(1);
+            return;
         }
     }
 
@@ -141,37 +146,134 @@ void dvb_OpenSec( void )
 }
 
 /*****************************************************************************
- * dvb_Open
+ * dvb_CloseDevices
  *****************************************************************************/
-void dvb_Open( void )
+void dvb_CloseDevices( void )
 {
-    char psz_tmp[128];
-
-    msg_Dbg( NULL, "compiled with DVB API version %d.%d", DVB_API_VERSION, DVB_API_VERSION_MINOR );
-
-    if ( i_frequency )
+    if ( i_dvr >= 0 )
     {
-        sprintf( psz_tmp, "/dev/dvb/adapter%d/frontend%d", i_adapter, i_fenum );
-        if( (i_frontend = open(psz_tmp, O_RDWR | O_NONBLOCK)) < 0 )
-        {
-            msg_Err( NULL, "opening device %s failed (%s)", psz_tmp,
-                     strerror(errno) );
-            exit(1);
-        }
-
-        FrontendSet(true);
+        ev_io_stop(event_loop, &dvr_watcher);
+        close(i_dvr);
+        i_dvr = -1;
     }
-    else
+    if ( i_demux_wildcard_fd >= 0 )
     {
+        ioctl(i_demux_wildcard_fd, DMX_STOP);
+        close(i_demux_wildcard_fd);
+        i_demux_wildcard_fd = -1;
+    }
+    ev_timer_stop(event_loop, &lock_watcher);
+    ev_timer_stop(event_loop, &mute_watcher);
+}
+
+void dvb_ReleaseAll( void )
+{
+    dvb_CloseDevices();
+    if ( i_frontend >= 0 )
+    {
+        ev_io_stop(event_loop, &frontend_watcher);
+        close(i_frontend);
         i_frontend = -1;
     }
+}
 
-    dvb_OpenDvr();
+/*****************************************************************************
+ * dvb_TuneFrontend
+ *****************************************************************************/
+bool dvb_TuneFrontend(int adapter, int frontend, uint64_t freq_hz, int bw_mhz,
+                      const char *delsys, int stream_id, const char *modulation,
+                      const char *guard, const char *transmit, int symbol_rate,
+                      int voltage, int diseqc, int tone)
+{
+    (void)guard; (void)transmit;
 
-    if ( i_frontend != -1 )
-    {
+    if (freq_hz > 0 && freq_hz < 1000) freq_hz *= 1000000;
+    else if (freq_hz >= 1000 && freq_hz < 1000000) freq_hz *= 1000;
+    if (freq_hz <= 0) return false;
+
+    if (bw_mhz <= 0) bw_mhz = 8;
+
+    /* If switching adapter or frontend number, release old hardware */
+    if (i_frontend >= 0 && (i_adapter != adapter || i_fenum != frontend)) {
+        dvb_ReleaseAll();
+    } else {
+        dvb_CloseDevices();
+    }
+
+    i_adapter = adapter;
+    i_fenum = frontend;
+    i_frequency = (int)freq_hz;
+    i_bandwidth = bw_mhz;
+    dvb_plp_id = stream_id;
+    if (symbol_rate > 0) i_srate = symbol_rate;
+    if (voltage > 0) i_voltage = voltage;
+    i_satnum = diseqc;
+    b_tone = tone;
+
+    if (delsys && *delsys && delsys != psz_delsys) {
+        free(psz_delsys);
+        psz_delsys = strdup(delsys);
+    }
+    if (modulation && *modulation && modulation != psz_modulation) {
+        free(psz_modulation);
+        psz_modulation = strdup(modulation);
+    }
+
+    char psz_tmp[128];
+    if (i_frontend < 0) {
+        sprintf(psz_tmp, "/dev/dvb/adapter%d/frontend%d", i_adapter, i_fenum);
+        if ((i_frontend = open(psz_tmp, O_RDWR | O_NONBLOCK | O_CLOEXEC)) < 0) {
+            msg_Err(NULL, "opening device %s failed (%s)", psz_tmp, strerror(errno));
+            i_frontend = -1;
+            return false;
+        }
         ev_io_init(&frontend_watcher, FrontendRead, i_frontend, EV_READ);
         ev_io_start(event_loop, &frontend_watcher);
+    }
+
+    FrontendSet(true);
+
+    /* Open demux wildcard filter (0x2000) for full transponder pass-through */
+    if (i_demux_wildcard_fd < 0) {
+        sprintf(psz_tmp, "/dev/dvb/adapter%d/demux%d", i_adapter, i_fenum);
+        int dmx_fd = -1;
+        for (int retry = 0; retry < 5; retry++) {
+            dmx_fd = open(psz_tmp, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+            if (dmx_fd >= 0) break;
+            usleep(20000);
+        }
+        if (dmx_fd >= 0) {
+            struct dmx_pes_filter_params filter;
+            memset(&filter, 0, sizeof(filter));
+            filter.pid = 0x2000;
+            filter.input = DMX_IN_FRONTEND;
+            filter.output = DMX_OUT_TS_TAP;
+            filter.pes_type = DMX_PES_OTHER;
+            filter.flags = DMX_IMMEDIATE_START;
+            if (ioctl(dmx_fd, DMX_SET_PES_FILTER, &filter) == 0) {
+                i_demux_wildcard_fd = dmx_fd;
+            } else {
+                msg_Warn(NULL, "setting demux wildcard filter on %s failed (%s)", psz_tmp, strerror(errno));
+                close(dmx_fd);
+            }
+        }
+    }
+
+    /* Open DVR device with 16MB buffer */
+    if (i_dvr < 0) {
+        sprintf(psz_tmp, "/dev/dvb/adapter%d/dvr%d", i_adapter, i_fenum);
+        for (int retry = 0; retry < 5; retry++) {
+            i_dvr = open(psz_tmp, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+            if (i_dvr >= 0) break;
+            usleep(20000);
+        }
+        if (i_dvr < 0) {
+            msg_Err(NULL, "opening device %s failed (%s)", psz_tmp, strerror(errno));
+        } else {
+            ioctl(i_dvr, DMX_SET_BUFFER_SIZE, 16 * 1024 * 1024);
+            ev_io_init(&dvr_watcher, DVRRead, i_dvr, EV_READ);
+            ev_io_start(event_loop, &dvr_watcher);
+        }
     }
 
     ev_timer_init(&lock_watcher, FrontendLockCb,
@@ -181,6 +283,32 @@ void dvb_Open( void )
                   DVR_READ_TIMEOUT / 1000000.,
                   DVR_READ_TIMEOUT / 1000000.);
 
+    if (i_frontend_timeout_duration)
+        ev_timer_again(event_loop, &lock_watcher);
+    ev_timer_again(event_loop, &mute_watcher);
+
+    return true;
+}
+
+/*****************************************************************************
+ * dvb_Open
+ *****************************************************************************/
+void dvb_Open( void )
+{
+    msg_Dbg( NULL, "compiled with DVB API version %d.%d", DVB_API_VERSION, DVB_API_VERSION_MINOR );
+
+    if ( i_frequency )
+    {
+        dvb_TuneFrontend(i_adapter, i_fenum, (uint64_t)i_frequency, i_bandwidth,
+                         psz_delsys, dvb_plp_id, psz_modulation, NULL, NULL,
+                         i_srate, i_voltage, i_satnum, b_tone);
+    }
+    else
+    {
+        i_frontend = -1;
+        i_dvr = -1;
+    }
+
     en50221_Init();
 }
 
@@ -189,7 +317,7 @@ void dvb_Open( void )
  *****************************************************************************/
 void dvb_Reset( void )
 {
-    if ( i_frequency )
+    if ( i_frequency > 0 && i_frontend >= 0 )
         FrontendSet(true);
 }
 
@@ -215,6 +343,10 @@ static void DVRRead(struct ev_loop *loop, struct ev_io *w, int revents)
         msg_Err( NULL, "couldn't read from DVR device (%s)",
                  strerror(errno) );
         i_len = 0;
+    }
+    else if ( i_len > 0 )
+    {
+        web_state_update_input_stats( i_adapter, i_len, i_len / TS_SIZE );
     }
     i_len /= TS_SIZE;
 
@@ -778,27 +910,24 @@ static fe_code_rate_t GetFEC(fe_caps_t fe_caps, int i_fec_value)
 
 static fe_modulation_t GetModulation(void)
 {
-#define GET_MODULATION( mod )                                               \
-    if ( !strcasecmp( psz_modulation, #mod ) )                              \
-        return mod;
+    if ( !psz_modulation || !*psz_modulation || !strcasecmp(psz_modulation, "auto") || !strcasecmp(psz_modulation, "qam_auto") )
+        return QAM_AUTO;
 
-    GET_MODULATION(QPSK);
-    GET_MODULATION(QAM_16);
-    GET_MODULATION(QAM_32);
-    GET_MODULATION(QAM_64);
-    GET_MODULATION(QAM_128);
-    GET_MODULATION(QAM_256);
-    GET_MODULATION(QAM_AUTO);
-    GET_MODULATION(VSB_8);
-    GET_MODULATION(VSB_16);
-    GET_MODULATION(PSK_8);
-    GET_MODULATION(APSK_16);
-    GET_MODULATION(APSK_32);
-    GET_MODULATION(DQPSK);
+    if ( !strcasecmp(psz_modulation, "qpsk") ) return QPSK;
+    if ( !strcasecmp(psz_modulation, "qam_16") || !strcasecmp(psz_modulation, "16qam") || !strcasecmp(psz_modulation, "qam16") ) return QAM_16;
+    if ( !strcasecmp(psz_modulation, "qam_32") || !strcasecmp(psz_modulation, "32qam") || !strcasecmp(psz_modulation, "qam32") ) return QAM_32;
+    if ( !strcasecmp(psz_modulation, "qam_64") || !strcasecmp(psz_modulation, "64qam") || !strcasecmp(psz_modulation, "qam64") ) return QAM_64;
+    if ( !strcasecmp(psz_modulation, "qam_128") || !strcasecmp(psz_modulation, "128qam") || !strcasecmp(psz_modulation, "qam128") ) return QAM_128;
+    if ( !strcasecmp(psz_modulation, "qam_256") || !strcasecmp(psz_modulation, "256qam") || !strcasecmp(psz_modulation, "qam256") ) return QAM_256;
+    if ( !strcasecmp(psz_modulation, "vsb_8") || !strcasecmp(psz_modulation, "8vsb") || !strcasecmp(psz_modulation, "vsb8") ) return VSB_8;
+    if ( !strcasecmp(psz_modulation, "vsb_16") || !strcasecmp(psz_modulation, "16vsb") || !strcasecmp(psz_modulation, "vsb16") ) return VSB_16;
+    if ( !strcasecmp(psz_modulation, "psk_8") || !strcasecmp(psz_modulation, "8psk") || !strcasecmp(psz_modulation, "psk8") ) return PSK_8;
+    if ( !strcasecmp(psz_modulation, "apsk_16") || !strcasecmp(psz_modulation, "16apsk") || !strcasecmp(psz_modulation, "apsk16") ) return APSK_16;
+    if ( !strcasecmp(psz_modulation, "apsk_32") || !strcasecmp(psz_modulation, "32apsk") || !strcasecmp(psz_modulation, "apsk32") ) return APSK_32;
+    if ( !strcasecmp(psz_modulation, "dqpsk") ) return DQPSK;
 
-#undef GET_MODULATION
-    msg_Err( NULL, "invalid modulation %s", psz_modulation );
-    exit(1);
+    msg_Warn( NULL, "unrecognized modulation '%s', falling back to QAM_AUTO", psz_modulation );
+    return QAM_AUTO;
 }
 
 static fe_pilot_t GetPilot(void)
@@ -1194,16 +1323,22 @@ FrontendGuessSystem( fe_delivery_system_t *p_systems, int i_systems )
 #endif
         if ( !strcasecmp( psz_delsys, "DVBC_ANNEX_B" ) )
             return SYS_DVBC_ANNEX_B;
-        if ( !strcasecmp( psz_delsys, "DVBT" ) )
-            return SYS_DVBT;
-        if ( !strcasecmp( psz_delsys, "DVBT2" ) )
+        if ( !strcasecmp( psz_delsys, "DVBT2" ) || !strcasecmp( psz_delsys, "T2" ) )
            return SYS_DVBT2;
+        if ( !strcasecmp( psz_delsys, "DVBT" ) || !strcasecmp( psz_delsys, "T" ) )
+           return SYS_DVBT;
+        if ( !strcasecmp( psz_delsys, "DVBS2" ) || !strcasecmp( psz_delsys, "S2" ) )
+           return SYS_DVBS2;
+        if ( !strcasecmp( psz_delsys, "DVBS" ) || !strcasecmp( psz_delsys, "S" ) )
+           return SYS_DVBS;
+        if ( !strcasecmp( psz_delsys, "DVBC" ) || !strcasecmp( psz_delsys, "C" ) || !strcasecmp( psz_delsys, "C/A" ) )
+           return SYS_DVBC_ANNEX_A;
         if ( !strcasecmp( psz_delsys, "ATSC" ) )
             return SYS_ATSC;
         if ( !strcasecmp( psz_delsys, "ISDBT" ) )
             return SYS_ISDBT;
-        msg_Err( NULL, "unknown delivery system %s", psz_delsys );
-        exit(1);
+        msg_Warn( NULL, "unknown delivery system '%s', falling back to SYS_DVBT2", psz_delsys );
+        return SYS_DVBT2;
     }
 
     if ( i_systems == 1 )
@@ -1258,7 +1393,7 @@ static void FrontendSet( bool b_init )
     if ( ioctl( i_frontend, FE_GET_INFO, &info ) < 0 )
     {
         msg_Err( NULL, "FE_GET_INFO failed (%s)", strerror(errno) );
-        exit(1);
+        return;
     }
 
     uint32_t version = 0x300;
@@ -1296,7 +1431,7 @@ static void FrontendSet( bool b_init )
             break;
         default:
             msg_Err( NULL, "unknown frontend type %d", info.type );
-            exit(1);
+            return;
         }
 #if DVBAPI_VERSION >= 505
     }
@@ -1306,13 +1441,13 @@ static void FrontendSet( bool b_init )
         if ( ioctl( i_frontend, FE_GET_PROPERTY, &enum_cmdseq ) < 0 )
         {
             msg_Err( NULL, "unable to query frontend" );
-            exit(1);
+            return;
         }
         i_systems = enum_cmdargs[0].u.buffer.len;
         if ( i_systems < 1 )
         {
             msg_Err( NULL, "no available delivery system" );
-            exit(1);
+            return;
         }
 
         int i;
@@ -1328,7 +1463,6 @@ static void FrontendSet( bool b_init )
     if ( ioctl( i_frontend, FE_SET_PROPERTY, &cmdclear ) < 0 )
     {
         msg_Err( NULL, "Unable to clear frontend" );
-        exit(1);
     }
 
     fe_delivery_system_t system = FrontendGuessSystem( p_systems, i_systems );
@@ -1367,7 +1501,13 @@ static void FrontendSet( bool b_init )
         p->props[GUARD].u.data = GetGuard();
         p->props[TRANSMISSION].u.data = GetTransmission();
         p->props[HIERARCHY].u.data = GetHierarchy();
-        p->props[PLP_ID].u.data = dvb_plp_id;
+#ifndef NO_STREAM_ID_FILTER
+#define NO_STREAM_ID_FILTER (~0U)
+#endif
+        if ( dvb_plp_id > 0 )
+            p->props[PLP_ID].u.data = dvb_plp_id;
+        else
+            p->props[PLP_ID].u.data = NO_STREAM_ID_FILTER;
 
         msg_Dbg( NULL, "tuning DVB-T2 frontend to f=%d bandwidth=%d inversion=%d fec_hp=%d fec_lp=%d hierarchy=%d modulation=%s guard=%d transmission=%d PLP_ID=%d ",
                  i_frequency, i_bandwidth, i_inversion, i_fec, i_fec_lp,
@@ -1476,7 +1616,7 @@ static void FrontendSet( bool b_init )
 
     default:
         msg_Err( NULL, "unknown frontend type %d", info.type );
-        exit(1);
+        return;
     }
 
     /* Empty the event queue */
@@ -1492,7 +1632,6 @@ static void FrontendSet( bool b_init )
     if ( ioctl( i_frontend, FE_SET_PROPERTY, p ) < 0 )
     {
         msg_Err( NULL, "setting frontend failed (%s)", strerror(errno) );
-        exit(1);
     }
 
     i_last_status = 0;
@@ -1514,7 +1653,7 @@ static void FrontendSet( bool b_init )
     if ( ioctl( i_frontend, FE_GET_INFO, &info ) < 0 )
     {
         msg_Err( NULL, "FE_GET_INFO failed (%s)", strerror(errno) );
-        exit(1);
+        return;
     }
 
     switch ( info.type )
@@ -1575,7 +1714,7 @@ static void FrontendSet( bool b_init )
 
     default:
         msg_Err( NULL, "unknown frontend type %d", info.type );
-        exit(1);
+        return;
     }
 
     /* Empty the event queue */
@@ -1602,38 +1741,115 @@ static void FrontendSet( bool b_init )
 
 #endif /* S2API */
 
+#ifndef DTV_STAT_SIGNAL_STRENGTH
+#define DTV_STAT_SIGNAL_STRENGTH 61
+#endif
+#ifndef DTV_STAT_CNR
+#define DTV_STAT_CNR 62
+#endif
+#ifndef MAX_DTV_STATS
+#define MAX_DTV_STATS 4
+#endif
+
 /*****************************************************************************
  * dvb_FrontendStatus
  *****************************************************************************/
 uint8_t dvb_FrontendStatus( uint8_t *p_answer, ssize_t *pi_size )
 {
+    if ( i_frontend < 0 )
+        return RET_ERR;
+
     struct ret_frontend_status *p_ret = (struct ret_frontend_status *)p_answer;
+    memset(p_ret, 0, sizeof(*p_ret));
 
-    if ( ioctl( i_frontend, FE_GET_INFO, &p_ret->info ) < 0 )
+    ioctl( i_frontend, FE_GET_INFO, &p_ret->info );
+    fe_status_t status = 0;
+    ioctl( i_frontend, FE_READ_STATUS, &status );
+
+    int sig_percent = 0;
+    int snr_percent = 0;
+    float sig_dbm = -100.0f;
+    float snr_db = 0.0f;
+    int signal_read = 0;
+
+    struct dtv_property props[2];
+    memset(props, 0, sizeof(props));
+    props[0].cmd = DTV_STAT_SIGNAL_STRENGTH;
+    props[1].cmd = DTV_STAT_CNR;
+    struct dtv_properties cmdseq = { .num = 2, .props = props };
+
+    if ( ioctl( i_frontend, FE_GET_PROPERTY, &cmdseq ) == 0 )
     {
-        msg_Err( NULL, "ioctl FE_GET_INFO failed (%s)", strerror(errno) );
-        return RET_ERR;
+        for ( int i = 0; i < (int)cmdseq.num; i++ )
+        {
+            struct dtv_property *p = &props[i];
+            if ( p->result != 0 ) continue;
+            for ( int l = 0; l < (int)p->u.st.len && l < MAX_DTV_STATS; l++ )
+            {
+                int64_t sval = p->u.st.stat[l].svalue;
+                uint32_t uval = p->u.st.stat[l].uvalue;
+                int scale = p->u.st.stat[l].scale;
+                if ( scale == FE_SCALE_NOT_AVAILABLE ) continue;
+
+                if ( p->cmd == DTV_STAT_SIGNAL_STRENGTH )
+                {
+                    if ( scale == FE_SCALE_DECIBEL ) {
+                        sig_dbm = (float)sval / 1000.0f;
+                        int dbm_int = (int)sig_dbm;
+                        sig_percent = dbm_int < -100 ? 0 : (dbm_int < 0 ? (dbm_int + 100) : 99);
+                    } else if ( scale == FE_SCALE_RELATIVE ) {
+                        sig_percent = (int)(uval * 99 / 65535);
+                        sig_dbm = -100.0f + (float)sig_percent;
+                    }
+                    if ( sig_percent > 0 ) signal_read = 1;
+                }
+                else if ( p->cmd == DTV_STAT_CNR )
+                {
+                    if ( scale == FE_SCALE_DECIBEL ) {
+                        snr_db = (float)sval / 1000.0f;
+                        snr_percent = (int)(snr_db * 100.0f / 35.0f);
+                        if ( snr_percent < 0 ) snr_percent = 0;
+                        if ( snr_percent > 99 ) snr_percent = 99;
+                    } else if ( scale == FE_SCALE_RELATIVE ) {
+                        snr_percent = (int)(uval * 99 / 65535);
+                        snr_db = (float)snr_percent * 0.35f;
+                    }
+                }
+            }
+        }
     }
 
-    if ( ioctl( i_frontend, FE_READ_STATUS, &p_ret->i_status ) < 0 )
+    if ( !signal_read )
     {
-        msg_Err( NULL, "ioctl FE_READ_STATUS failed (%s)", strerror(errno) );
-        return RET_ERR;
+        uint16_t leg_sig = 0, leg_snr = 0;
+        if ( ioctl( i_frontend, FE_READ_SIGNAL_STRENGTH, &leg_sig ) == 0 && leg_sig > 0 )
+        {
+            sig_percent = (int)(leg_sig * 99 / 65535);
+            sig_dbm = -100.0f + (float)sig_percent;
+            signal_read = 1;
+        }
+        if ( ioctl( i_frontend, FE_READ_SNR, &leg_snr ) == 0 && leg_snr > 0 )
+        {
+            snr_percent = (int)(leg_snr * 99 / 65535);
+            snr_db = (float)snr_percent * 0.35f;
+        }
     }
 
-    if ( p_ret->i_status & FE_HAS_LOCK )
+    uint32_t ber = 0;
+    if ( ioctl( i_frontend, FE_READ_BER, &ber ) == 0 ) p_ret->i_ber = ber;
+
+    /* Si2168 demodulator quirk: status may return 0 even when locked with RF signal */
+    if ( (status & FE_HAS_LOCK) == 0 && signal_read && sig_percent > 10 )
     {
-        if ( ioctl( i_frontend, FE_READ_BER, &p_ret->i_ber ) < 0 )
-            msg_Err( NULL, "ioctl FE_READ_BER failed (%s)", strerror(errno) );
-
-        if ( ioctl( i_frontend, FE_READ_SIGNAL_STRENGTH, &p_ret->i_strength )
-              < 0 )
-            msg_Err( NULL, "ioctl FE_READ_SIGNAL_STRENGTH failed (%s)",
-                     strerror(errno) );
-
-        if ( ioctl( i_frontend, FE_READ_SNR, &p_ret->i_snr ) < 0 )
-            msg_Err( NULL, "ioctl FE_READ_SNR failed (%s)", strerror(errno) );
+        status |= (FE_HAS_SIGNAL | FE_HAS_CARRIER | FE_HAS_VITERBI | FE_HAS_SYNC | FE_HAS_LOCK);
     }
+
+    dvb_live_signal_dbm = sig_dbm;
+    dvb_live_snr_db = snr_db;
+
+    p_ret->i_status = status;
+    p_ret->i_strength = (uint16_t)((sig_percent * 65535) / 100);
+    p_ret->i_snr = (uint16_t)((snr_percent * 65535) / 100);
 
     *pi_size = sizeof(struct ret_frontend_status);
     return RET_FRONTEND_STATUS;
