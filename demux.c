@@ -183,6 +183,11 @@ static void NewSDT( output_t *p_output );
 static void HandlePSIPacket( uint8_t *p_ts, mtime_t i_dts );
 static const char *get_pid_desc(uint16_t i_pid, uint16_t *i_sid);
 
+static inline bool pid_is_reserved( uint16_t i_pid )
+{
+    return i_pid < 0x20 || i_pid == PADDING_PID;
+}
+
 /*
  * Remap an ES pid to a fixed value.
  * Multiple streams of the same type use sequential pids
@@ -2701,7 +2706,13 @@ static void HandleCAT( mtime_t i_dts )
             if ( desc_get_tag( p_desc ) != 0x09 || !desc09_validate( p_desc ) )
                 continue;
 
-            SetPID_EMM( desc09_get_pid( p_desc ) );
+            uint16_t i_emm_pid = desc09_get_pid( p_desc );
+            if ( pid_is_reserved( i_emm_pid ) )
+            {
+                msg_Warn( NULL, "CAT: ignoring invalid EMM PID %u", i_emm_pid );
+                continue;
+            }
+            SetPID_EMM( i_emm_pid );
         }
     }
 
@@ -2721,6 +2732,8 @@ static void HandleCAT( mtime_t i_dts )
                     continue;
 
                 emm_pid = desc09_get_pid( p_desc );
+                if ( pid_is_reserved( emm_pid ) )
+                    continue;
 
                 // Search in current sections if the pid exists
                 i_last_section2 = psi_table_get_lastsection( pp_current_cat_sections );
